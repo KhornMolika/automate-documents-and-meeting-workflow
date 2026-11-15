@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-ivory-50 text-bordeaux-950 antialiased font-sans;
+  }
+}
+
+/* Custom scrollbars matching the 60-30-10 palette */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #F7F2E0;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #DFD7BC;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #5D94D8;
+}

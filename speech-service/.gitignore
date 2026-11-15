@@ -1,0 +1,27 @@
+# Python Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Large Model Weights (Checkpoint weights should not be committed to Git)
+models/*
+!models/.gitkeep
+*.pt
+*.pth
+*.bin
+*.onnx
+*.safetensors
+
+# Audio buffer dumps
+*.wav
+*.mp3
+*.pcm
+*.flac
+
+# Logs
+*.log

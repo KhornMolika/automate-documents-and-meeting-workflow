@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Nuxt 3 & Nitro build artifacts
+.nuxt/
+.output/
+.nitro/
+dist/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor directories
+.vscode/
+.idea/
+
+# OS Files
+.DS_Store
+Thumbs.db
