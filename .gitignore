@@ -42,8 +42,15 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 uploads/
+exports/
 tmp/
 temp/
+
+# Generated Chrome extension install folder
+AUB-Meeting-Extension/
+
+# UI design review artifacts
+.taste-skill/
 
 # Databases & local storage
 *.db
@@ -98,6 +105,9 @@ coverage.xml
 *.py,cover
 .hypothesis/
 htmlcov/
+test-results/
+playwright-report/
+blob-report/
 
 # ------------------------------------------
 # Node.js & Web (Frontend & Extension)

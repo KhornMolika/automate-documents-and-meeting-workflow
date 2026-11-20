@@ -1,188 +1,351 @@
-<template>
-  <div class="space-y-6 max-w-7xl mx-auto">
-    <!-- Top Action & Status Bar -->
-    <div class="bg-white border border-ivory-200 rounded-3xl p-6 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-      <div class="space-y-1">
-        <div class="flex items-center space-x-2">
-          <span class="relative flex h-3 w-3">
-            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-            <span class="relative inline-flex rounded-full h-3 w-3 bg-red-600"></span>
-          </span>
-          <span class="text-xs font-bold text-red-600 uppercase tracking-wider">Live Streaming Ingress</span>
-          <span class="text-xs text-bordeaux-700 font-medium">• Google Meet Tab: Active</span>
-        </div>
-        <h2 class="text-2xl font-extrabold text-bordeaux-950">Faculty Board Review: Research Methodology Proposals</h2>
-      </div>
-
-      <!-- Action & Audio Telemetry (10% Horizon Accent) -->
-      <div class="flex items-center space-x-3 w-full sm:w-auto">
-        <!-- Live Audio Waveform Animation -->
-        <div class="flex items-center space-x-1 px-3 py-2 bg-ivory-100 rounded-xl border border-ivory-200">
-          <span class="w-1 h-3 bg-horizon-500 rounded-full animate-bounce"></span>
-          <span class="w-1 h-6 bg-horizon-600 rounded-full animate-bounce" style="animation-delay: 0.1s"></span>
-          <span class="w-1 h-4 bg-horizon-500 rounded-full animate-bounce" style="animation-delay: 0.2s"></span>
-          <span class="w-1 h-7 bg-horizon-700 rounded-full animate-bounce" style="animation-delay: 0.3s"></span>
-          <span class="w-1 h-3 bg-horizon-500 rounded-full animate-bounce" style="animation-delay: 0.15s"></span>
-          <span class="text-[11px] font-bold text-bordeaux-900 ml-2">16kHz PCM</span>
-        </div>
-
-        <NuxtLink
-          :to="`/meetings/${meetingId}/review`"
-          class="px-5 py-2.5 rounded-2xl bg-horizon-500 hover:bg-horizon-600 text-bordeaux-950 font-bold text-xs shadow-md transition-all flex items-center space-x-2"
-        >
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-          </svg>
-          <span>Adjourn & Generate MoM</span>
-        </NuxtLink>
-      </div>
-    </div>
-
-    <!-- Dual-Pane Live Transcript Console (60% Ivory Canvas / 30% Bordeaux Content / 10% Horizon Streaming Badges) -->
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <!-- Left Column: Original Khmer / Code-Switched Speech -->
-      <div class="bg-white border border-ivory-200 rounded-3xl p-6 shadow-sm flex flex-col h-[600px]">
-        <div class="flex items-center justify-between pb-4 border-b border-ivory-200">
-          <div class="flex items-center space-x-2">
-            <span class="p-1.5 rounded-lg bg-bordeaux-100 text-bordeaux-900">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 100-6 3 3 0 000 6z" />
-              </svg>
-            </span>
-            <h3 class="font-bold text-sm text-bordeaux-950 uppercase tracking-wider">
-              Original Spoken Utterance (Khmer / English)
-            </h3>
-          </div>
-          <span class="text-[11px] font-bold px-2.5 py-0.5 rounded bg-bordeaux-100 text-bordeaux-900">
-            Omnilingual-ASR-Khm
-          </span>
-        </div>
-
-        <div class="flex-1 overflow-y-auto py-4 space-y-4 pr-2">
-          <div
-            v-for="(seg, idx) in segments"
-            :key="idx"
-            class="p-4 rounded-2xl bg-ivory-50 border border-ivory-200 space-y-1.5 hover:border-horizon-300 transition-all"
-          >
-            <div class="flex items-center justify-between text-xs">
-              <span class="font-bold text-bordeaux-900 flex items-center space-x-1.5">
-                <span class="h-2 w-2 rounded-full bg-horizon-500"></span>
-                <span>{{ seg.speaker_label }}</span>
-              </span>
-              <span class="text-bordeaux-600 font-mono">{{ seg.start_timestamp }}s - {{ seg.end_timestamp }}s</span>
-            </div>
-            <p class="text-sm font-medium text-bordeaux-950 leading-relaxed font-sans">
-              {{ seg.original_text }}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Right Column: Real-Time English / Khmer Translation -->
-      <div class="bg-white border border-ivory-200 rounded-3xl p-6 shadow-sm flex flex-col h-[600px]">
-        <div class="flex items-center justify-between pb-4 border-b border-ivory-200">
-          <div class="flex items-center space-x-2">
-            <span class="p-1.5 rounded-lg bg-horizon-100 text-horizon-800">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" />
-              </svg>
-            </span>
-            <h3 class="font-bold text-sm text-bordeaux-950 uppercase tracking-wider">
-              Live Bidirectional Translation
-            </h3>
-          </div>
-          <span class="text-[11px] font-bold px-2.5 py-0.5 rounded bg-horizon-100 text-horizon-800">
-            Netra-NMT (77M)
-          </span>
-        </div>
-
-        <div class="flex-1 overflow-y-auto py-4 space-y-4 pr-2">
-          <div
-            v-for="(seg, idx) in segments"
-            :key="idx"
-            class="p-4 rounded-2xl bg-ivory-50 border border-ivory-200 space-y-1.5 border-l-4 border-l-horizon-500"
-          >
-            <div class="flex items-center justify-between text-xs">
-              <span class="font-semibold text-horizon-800">English Translation</span>
-              <span class="text-bordeaux-600 font-mono">Confidence: {{ Math.round(seg.confidence_score * 100) }}%</span>
-            </div>
-            <p class="text-sm italic text-bordeaux-900 leading-relaxed">
-              {{ seg.translated_text }}
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { ArrowLeft, Copy, FileCheck2, Play } from 'lucide-vue-next'
+import { toast } from 'vue-sonner'
+import { Badge } from '~/components/ui/badge'
+import { Button } from '~/components/ui/button'
+import { Card, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
+import AudioWave from '~/components/motion/AudioWave.vue'
+import LiveDot from '~/components/motion/LiveDot.vue'
+import ErrorState from '~/components/workspace/ErrorState.vue'
+import LoadingState from '~/components/workspace/LoadingState.vue'
+import PageHeader from '~/components/workspace/PageHeader.vue'
+import StatusBadge from '~/components/workspace/StatusBadge.vue'
+import { useApi } from '~/composables/useApi'
+import { formatDate, formatTimeRange, plural } from '~/lib/format'
+import type { Meeting, TranscriptSegment } from '~/types/api'
+
+useHead({ title: 'Live meeting · ACLEDA University' })
 
 const route = useRoute()
-const meetingId = ref(route.params.id || 'demo-meeting-01')
+const api = useApi()
+const config = useRuntimeConfig()
+const meetingId = computed(() => String(route.params.id))
+const { data, pending, error, refresh } = await useAsyncData(`live-${meetingId.value}`, async () => {
+  const [meeting, transcripts] = await Promise.all([
+    api<Meeting>(`/meetings/${meetingId.value}`),
+    api<TranscriptSegment[]>(`/meetings/${meetingId.value}/transcripts`),
+  ])
+  return { meeting, transcripts }
+})
 
-const segments = ref([
-  {
-    speaker_label: 'Dean Lay Thou',
-    start_timestamp: 0.0,
-    end_timestamp: 4.5,
-    original_text: 'សូមជម្រាបសួរលោកគ្រូអ្នកគ្រូទាំងអស់គ្នា ថ្ងៃនេះយើងប្រជុំ review the project proposal របស់ក្រុមទី ៤.',
-    translated_text: 'Good morning teachers and everyone, today we meet to review Group 4\'s project proposal.',
-    confidence_score: 0.97
-  },
-  {
-    speaker_label: 'Khorn Molika (Group 4)',
-    start_timestamp: 5.0,
-    end_timestamp: 11.2,
-    original_text: 'ជំរាបសួរលោកគ្រូ! ក្រុមយើងបាន design software architecture ដោយប្រើ Nuxt 3, FastAPI និង Omnilingual ASR.',
-    translated_text: 'Hello teacher! Our team designed the software architecture utilizing Nuxt 3, FastAPI, and Omnilingual ASR.',
-    confidence_score: 0.95
-  },
-  {
-    speaker_label: 'Dean Lay Thou',
-    start_timestamp: 12.0,
-    end_timestamp: 17.8,
-    original_text: 'ល្អណាស់! យើងត្រូវ enforce human-in-the-loop review មុនពេល export MoM ទៅ Google Docs.',
-    translated_text: 'Excellent! We must enforce human-in-the-loop review before exporting the MoM to Google Docs.',
-    confidence_score: 0.98
-  },
-  {
-    speaker_label: 'Heng Liza (Group 4)',
-    start_timestamp: 18.5,
-    end_timestamp: 24.0,
-    original_text: 'បាទលោកគ្រូ! Action items ទាំងអស់នឹង sync ចូល Google Sheets ដោយស្វ័យប្រវត្តិតាម Sheets API.',
-    translated_text: 'Yes teacher! All action items will automatically synchronize into Google Sheets via the Sheets API.',
-    confidence_score: 0.96
-  }
-])
+const meeting = computed(() => data.value?.meeting)
+const segments = ref<TranscriptSegment[]>([])
+const liveNotice = ref('')
+const acting = ref(false)
+const captureState = ref<'idle' | 'connected' | 'receiving' | 'disconnected'>('idle')
+const lastChunk = ref(0)
+const audioPeak = ref(0)
+const micBlocked = ref(false)
+const tabBlocked = ref(false)
+let socket: WebSocket | null = null
 
-let ws: WebSocket | null = null
+const captureLabel = computed(() => {
+  if (captureState.value === 'receiving') return `Receiving audio · chunk ${lastChunk.value}`
+  if (captureState.value === 'connected') return 'Capture connected'
+  if (captureState.value === 'disconnected') return 'Capture disconnected'
+  return 'Waiting for capture'
+})
 
-onMounted(() => {
-  // Connect to live transcript WebSocket
+  watch(
+  data,
+  value => {
+    if (value) segments.value = value.transcripts.filter(segment => segment.original_text.trim())
+  },
+  { immediate: true },
+)
+
+function formatTimestamp(value: number) {
+  const minutes = Math.floor(value / 60)
+  const seconds = Math.floor(value % 60)
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
+function closeSocket() {
+  socket?.close()
+  socket = null
+}
+
+function connectSocket() {
+  if (socket && socket.readyState === WebSocket.OPEN) return
+  closeSocket()
   try {
-    const wsUrl = `ws://localhost:8000/ws/live-transcript/${meetingId.value}`
-    ws = new WebSocket(wsUrl)
-    ws.onmessage = (event) => {
+    socket = new WebSocket(`${config.public.wsBase}/ws/live-transcript/${meetingId.value}`)
+    socket.onmessage = event => {
       try {
-        const data = JSON.parse(event.data)
-        if (data.type === 'transcript_segment') {
-          segments.value.push(data)
+        const payload = JSON.parse(event.data)
+        if (payload.type === 'capture_status') {
+          captureState.value = payload.status
+          lastChunk.value = payload.chunk ?? 0
+          if (payload.source === 'mic' || payload.source === 'mixed' || !payload.source) {
+            audioPeak.value = payload.peak ?? 0
+          }
+          const micBlockedNow = payload.mic === '0' || payload.mic === 0 || payload.mic === false
+          const tabBlockedNow = payload.tab === '0' || payload.tab === 0 || payload.tab === false
+          micBlocked.value = micBlockedNow
+          tabBlocked.value = tabBlockedNow
+          if (micBlockedNow) {
+            liveNotice.value =
+              'The extension could not access the microphone. Allow it for the extension in Chrome and macOS, then start capture again.'
+          } else if (payload.status === 'disconnected') {
+            liveNotice.value = 'Audio capture disconnected. Reopen the extension popup and start capture again.'
+          } else if (payload.status === 'connected') {
+            liveNotice.value = tabBlockedNow
+              ? 'Capture connected without Meet tab audio — recording the microphone only. Open the extension from the Meet tab to include other participants.'
+              : 'Capture connected — waiting for the first 10-second audio chunk.'
+          } else if (payload.status === 'receiving') {
+            if (payload.source === 'tab') {
+              // Remote participants are speaking; keep any microphone warning visible.
+            } else if (audioPeak.value < 0.002) {
+              liveNotice.value = `Audio is arriving but the level is very low (${(audioPeak.value * 100).toFixed(2)}%). Check that the Meet tab is unmuted and the microphone is allowed.`
+            } else {
+              liveNotice.value = ''
+            }
+          }
+          return
         }
-      } catch (e) {
-        // Ignored
+        if (payload.type === 'transcription_error') {
+          liveNotice.value = payload.message ?? 'Live transcription is unavailable.'
+          return
+        }
+        if (payload.type !== 'transcript_segment') {
+          if (payload.type === 'transcription_status' && payload.status === 'no_speech') {
+            if (payload.source === 'tab') return
+            if (micBlocked.value) {
+              liveNotice.value =
+                'The extension could not access the microphone. Allow it for the extension in Chrome and macOS, then start capture again.'
+            } else {
+              liveNotice.value =
+                audioPeak.value < 0.002
+                  ? `Audio is arriving but the level is very low (${(audioPeak.value * 100).toFixed(2)}%). Check that the Meet tab is unmuted and the microphone is allowed.`
+                  : 'Listening — no speech detected in the last audio chunk.'
+            }
+          }
+          return
+        }
+        if (!String(payload.original_text ?? '').trim()) return
+        liveNotice.value = ''
+        segments.value.push({
+          id: `live-${Date.now()}-${segments.value.length}`,
+          speaker_label: payload.speaker_label ?? 'Speaker',
+          start_timestamp: payload.start_timestamp ?? 0,
+          end_timestamp: payload.end_timestamp ?? 0,
+          original_text: payload.original_text ?? '',
+          translated_text: payload.translated_text ?? null,
+          confidence_score: payload.confidence_score ?? 0,
+          language_detected: payload.language_detected ?? 'unknown',
+          created_at: new Date().toISOString(),
+        })
+      } catch {
+        liveNotice.value = 'Received an unreadable transcript message.'
       }
     }
-  } catch (err) {
-    console.warn('Live WebSocket unavailable, displaying simulated real-time stream:', err)
+    socket.onerror = () => {
+      liveNotice.value = 'The live transcript channel is unavailable.'
+    }
+  } catch {
+    liveNotice.value = 'The live transcript channel could not be opened.'
   }
-})
+}
 
-onUnmounted(() => {
-  if (ws) {
-    ws.close()
+watch(
+  () => meeting.value?.status,
+  status => {
+    if (status === 'In Progress') connectSocket()
+    else closeSocket()
+  },
+  { immediate: true },
+)
+
+onUnmounted(closeSocket)
+
+async function startSession() {
+  acting.value = true
+  try {
+    await api(`/meetings/${meetingId.value}/start`, { method: 'POST' })
+    await refresh()
+    toast.success('Session started.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not start the session.')
+  } finally {
+    acting.value = false
   }
-})
+}
+
+async function endSession() {
+  acting.value = true
+  try {
+    await api(`/meetings/${meetingId.value}/end`, { method: 'POST' })
+    await navigateTo(`/meetings/${meetingId.value}/review`)
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not end the session.')
+  } finally {
+    acting.value = false
+  }
+}
+
+async function copyMeetingId() {
+  try {
+    await navigator.clipboard.writeText(meetingId.value)
+    toast.success('Meeting ID copied. Paste it into the extension popup.')
+  } catch {
+    toast.error('Could not copy the meeting ID.')
+  }
+}
 </script>
+
+<template>
+  <div>
+    <NuxtLink
+      to="/meetings"
+      class="mb-4 inline-flex items-center gap-1.5 text-[13px] text-muted-foreground transition-colors hover:text-foreground"
+    >
+      <ArrowLeft class="h-3.5 w-3.5" />
+      Meetings
+    </NuxtLink>
+
+    <LoadingState v-if="pending" />
+    <ErrorState v-else-if="error" :message="error.message" @retry="refresh" />
+
+    <template v-else-if="meeting">
+      <PageHeader :title="meeting.title">
+        <template #meta>
+          <Badge v-if="meeting.status === 'In Progress'" variant="live">
+            <LiveDot />
+            Live
+          </Badge>
+          <StatusBadge v-else :status="meeting.status" />
+          <span class="text-[13px] text-muted-foreground">
+            {{ formatDate(meeting.scheduled_start) }} · {{ formatTimeRange(meeting.scheduled_start, meeting.scheduled_end) }}
+          </span>
+          <span v-if="meeting.status === 'In Progress'" class="hidden items-center gap-1.5 text-[13px] text-muted-foreground sm:flex">
+            <AudioWave v-if="captureState === 'receiving'" />
+            <LiveDot v-else-if="captureState === 'connected'" />
+            {{ captureLabel }}
+          </span>
+        </template>
+        <template #actions>
+          <Button variant="outline" size="sm" @click="copyMeetingId">
+            <Copy class="h-4 w-4" />
+            Copy meeting ID
+          </Button>
+          <Button v-if="meeting.status === 'Scheduled'" :disabled="acting" @click="startSession">
+            <Play class="h-4 w-4" />
+            {{ acting ? 'Starting…' : 'Start session' }}
+          </Button>
+          <Button v-else-if="meeting.status === 'In Progress'" :disabled="acting" @click="endSession">
+            <FileCheck2 class="h-4 w-4" />
+            {{ acting ? 'Ending…' : 'End & generate MoM' }}
+          </Button>
+          <Button v-else as-child>
+            <NuxtLink :to="`/meetings/${meeting.id}/review`">
+              <FileCheck2 class="h-4 w-4" />
+              Review minutes
+            </NuxtLink>
+          </Button>
+        </template>
+      </PageHeader>
+
+      <div class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground">
+        <span>{{ plural(meeting.participant_count, 'participant') }}</span>
+        <span aria-hidden="true">·</span>
+        <span>{{ plural(meeting.agendas.length, 'agenda item') }}</span>
+        <span v-if="meeting.summary?.is_verified" aria-hidden="true">·</span>
+        <span v-if="meeting.summary?.is_verified">Minutes verified</span>
+      </div>
+
+      <div v-if="meeting.agendas.length" class="mt-4 flex flex-wrap gap-x-5 gap-y-1 border-y py-2.5 text-[13px] text-muted-foreground">
+        <span class="font-medium text-foreground">Agenda</span>
+        <span v-for="item in meeting.agendas" :key="item.id">{{ item.title }}</span>
+      </div>
+
+      <div class="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground">
+        <span>To record a Google Meet, open the Meet tab, click the</span>
+        <span class="font-medium text-foreground">AUB Meeting Ingress</span>
+        <span>extension icon there, then paste this meeting ID and allow microphone access.</span>
+      </div>
+
+      <div v-if="liveNotice" class="mt-4 rounded-md border border-warning/20 bg-warning-soft px-4 py-3 text-[13px] text-warning">
+        {{ liveNotice }}
+      </div>
+
+      <div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <Card class="flex flex-col xl:col-span-7">
+          <CardHeader class="flex-row items-start justify-between gap-3 pb-3">
+            <div>
+              <CardTitle>Original transcript</CardTitle>
+              <CardDescription class="mt-1">Khmer and English as spoken.</CardDescription>
+            </div>
+            <Badge variant="outline">ASR</Badge>
+          </CardHeader>
+          <div v-if="segments.length" class="max-h-[520px] flex-1 overflow-y-auto border-t p-5 xl:max-h-none">
+            <div
+              v-for="segment in segments"
+              :key="segment.id"
+              class="rounded-md px-2 py-3.5 transition-colors first:pt-0 last:pb-0 hover:bg-muted/40"
+              data-testid="original-segment"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <div class="flex items-center gap-2">
+                  <p class="text-[13px] font-medium">{{ segment.speaker_label }}</p>
+                  <span
+                    v-if="segment.language_detected && segment.language_detected !== 'unknown'"
+                    class="rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                  >
+                    {{ segment.language_detected }}
+                  </span>
+                </div>
+                <p class="tabular-nums text-[13px] text-muted-foreground">
+                  {{ formatTimestamp(segment.start_timestamp) }}–{{ formatTimestamp(segment.end_timestamp) }}
+                </p>
+              </div>
+              <p class="mt-1.5 font-khmer text-sm leading-relaxed">{{ segment.original_text }}</p>
+            </div>
+          </div>
+          <div v-else class="flex flex-1 items-center border-t px-5 py-8">
+            <p class="text-[13px] text-muted-foreground">
+              No transcript yet. Start the session and connect the audio ingress extension.
+            </p>
+          </div>
+          <div class="mt-auto flex items-center justify-between border-t px-5 py-3 text-[13px] text-muted-foreground">
+            <span class="flex items-center gap-2">
+              <AudioWave v-if="meeting.status === 'In Progress'" class="h-3" />
+              {{ meeting.status === 'In Progress' ? 'Listening for new speech…' : 'Session not capturing audio' }}
+            </span>
+            <span class="hidden sm:block">Audio stays on campus</span>
+          </div>
+        </Card>
+
+        <Card class="flex flex-col xl:col-span-5">
+          <CardHeader class="flex-row items-start justify-between gap-3 pb-3">
+            <div>
+              <CardTitle>English translation</CardTitle>
+              <CardDescription class="mt-1">Translated as the meeting runs.</CardDescription>
+            </div>
+            <Badge variant="outline">NMT</Badge>
+          </CardHeader>
+          <div v-if="segments.length" class="max-h-[520px] flex-1 overflow-y-auto border-t p-5 xl:max-h-none">
+            <div
+              v-for="segment in segments"
+              :key="segment.id"
+              class="rounded-md px-2 py-3.5 transition-colors first:pt-0 last:pb-0 hover:bg-muted/40"
+              data-testid="translation-segment"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <p class="text-[13px] font-medium">{{ segment.speaker_label }}</p>
+                <p class="tabular-nums text-[13px] text-muted-foreground">
+                  {{ formatTimestamp(segment.start_timestamp) }}–{{ formatTimestamp(segment.end_timestamp) }}
+                </p>
+              </div>
+              <p class="mt-1.5 text-sm leading-relaxed">{{ segment.translated_text || 'Translation unavailable' }}</p>
+            </div>
+          </div>
+          <div v-else class="flex flex-1 items-center border-t px-5 py-8">
+            <p class="text-[13px] text-muted-foreground">No translation yet.</p>
+          </div>
+        </Card>
+      </div>
+    </template>
+  </div>
+</template>

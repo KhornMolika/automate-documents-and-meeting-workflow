@@ -33,6 +33,11 @@ class TranscriptSegmentOut(TranscriptSegmentCreate):
     created_at: datetime
 
 
+class TranscriptSegmentUpdate(BaseModel):
+    original_text: Optional[str] = None
+    translated_text: Optional[str] = None
+
+
 # AI Extraction Schemas (Structured Pydantic v2 Models for Gemini 1.5 Pro)
 class ActionItemSchema(BaseModel):
     task_description: str = Field(description="Clear, actionable task description")
@@ -112,6 +117,7 @@ class MeetingOut(BaseModel):
     department_id: str
     status: str
     created_at: datetime
+    participant_count: int = 0
     agendas: List[AgendaItemOut] = []
     summary: Optional[MeetingSummaryOut] = None
 
@@ -124,3 +130,10 @@ class MoMApprovalInput(BaseModel):
     export_to_google_docs: bool = True
     export_to_google_sheets: bool = True
     notify_attendees_gmail: bool = False
+
+
+class MoMDraftInput(BaseModel):
+    executive_summary: str
+    discussion_points: List[str]
+    decisions: List[DecisionSchema]
+    action_items: List[ActionItemSchema]

@@ -28,6 +28,10 @@ class Meeting(Base):
     transcripts = relationship("MeetingTranscript", back_populates="meeting", cascade="all, delete-orphan", order_by="MeetingTranscript.start_timestamp")
     summary = relationship("MeetingSummary", back_populates="meeting", uselist=False, cascade="all, delete-orphan")
 
+    @property
+    def participant_count(self) -> int:
+        return len(self.participants)
+
 
 class MeetingAgenda(Base):
     __tablename__ = "meeting_agendas"

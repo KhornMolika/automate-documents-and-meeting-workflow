@@ -31,6 +31,9 @@ class WebRTCVoiceActivityDetector:
     def filter_silence(self, pcm_bytes: bytes) -> bytes:
         """
         Splits PCM bytes into frames and discards silence.
+
+        If the chunk contains almost no speech, return empty bytes so the ASR
+        models never see noise (Whisper can hallucinate text on noise).
         """
         if not self._vad:
             return pcm_bytes
@@ -41,4 +44,8 @@ class WebRTCVoiceActivityDetector:
             if self.is_speech(frame):
                 speech_frames.append(frame)
 
-        return b"".join(speech_frames) if speech_frames else pcm_bytes
+        total_frames = len(pcm_bytes) // self.frame_size
+        minimum_frames = max(2, int(total_frames * 0.15))
+        if len(speech_frames) < minimum_frames:
+            return b""
+        return b"".join(speech_frames)

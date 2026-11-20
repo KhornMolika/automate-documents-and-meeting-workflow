@@ -38,6 +38,7 @@ class DocumentOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     latest_version: Optional[DocumentVersionOut] = None
+    versions: List[DocumentVersionOut] = []
 
 
 class DocumentSearchResponse(BaseModel):

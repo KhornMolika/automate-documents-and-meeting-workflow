@@ -1,298 +1,572 @@
+<script setup lang="ts">
+import { computed, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { ArrowLeft, Check, Download, Plus, X } from 'lucide-vue-next'
+import { toast } from 'vue-sonner'
+import { Badge } from '~/components/ui/badge'
+import { Button } from '~/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '~/components/ui/dialog'
+import { Input } from '~/components/ui/input'
+import { Label } from '~/components/ui/label'
+import { Textarea } from '~/components/ui/textarea'
+import ErrorState from '~/components/workspace/ErrorState.vue'
+import LoadingState from '~/components/workspace/LoadingState.vue'
+import PageHeader from '~/components/workspace/PageHeader.vue'
+import StatusBadge from '~/components/workspace/StatusBadge.vue'
+import { useApi } from '~/composables/useApi'
+import { formatDate, formatTimeRange, parseDiscussionPoints, plural } from '~/lib/format'
+import type { Meeting, MeetingSummary, MinutesOfMeeting, MomPayload, TranscriptSegment } from '~/types/api'
+
+useHead({ title: 'Minutes review · ACLEDA University' })
+
+const route = useRoute()
+const api = useApi()
+const meetingId = computed(() => String(route.params.id))
+const { data, pending, error, refresh } = await useAsyncData(`review-${meetingId.value}`, async () => {
+  const [meeting, transcripts] = await Promise.all([
+    api<Meeting>(`/meetings/${meetingId.value}`),
+    api<TranscriptSegment[]>(`/meetings/${meetingId.value}/transcripts`),
+  ])
+  return { meeting, transcripts }
+})
+
+const meeting = computed(() => data.value?.meeting)
+const sourceTranscripts = computed(() => data.value?.transcripts ?? [])
+const mom = reactive({
+  executiveSummary: '',
+  discussionPoints: [] as string[],
+  decisions: [] as { agendaTopic: string, decisionText: string }[],
+  actionItems: [] as { taskDescription: string, assigneeName: string, deadline: string }[],
+})
+const isVerified = ref(false)
+const generated = ref(false)
+const generating = ref(false)
+const saving = ref(false)
+const publishing = ref(false)
+const approveOpen = ref(false)
+const draftSaved = ref(false)
+const aiError = ref('')
+const editingTranscriptId = ref('')
+const transcriptDraftOriginal = ref('')
+const transcriptDraftTranslated = ref('')
+const savingTranscript = ref(false)
+
+function hydrate(summary?: MeetingSummary | null) {
+  if (!summary) {
+    mom.executiveSummary = ''
+    mom.discussionPoints = []
+    mom.decisions = []
+    mom.actionItems = []
+    isVerified.value = false
+    return
+  }
+  mom.executiveSummary = summary.executive_summary
+  mom.discussionPoints = parseDiscussionPoints(summary.discussion_highlights)
+  mom.decisions = summary.decisions.map(decision => ({
+    agendaTopic: decision.agenda_topic ?? '',
+    decisionText: decision.decision_text,
+  }))
+  mom.actionItems = summary.action_items.map(item => ({
+    taskDescription: item.task_description,
+    assigneeName: item.raw_assignee_name ?? '',
+    deadline: item.deadline ?? '',
+  }))
+  isVerified.value = summary.is_verified
+  generated.value = true
+}
+
+watch(meeting, value => hydrate(value?.summary), { immediate: true })
+
+const itemSummary = computed(() => `${plural(mom.decisions.length, 'decision')} · ${plural(mom.actionItems.length, 'action item')}`)
+const hasDraft = computed(() =>
+  generated.value
+  || !!meeting.value?.summary
+  || mom.executiveSummary.trim().length > 0
+  || mom.discussionPoints.length > 0
+  || mom.decisions.length > 0
+  || mom.actionItems.length > 0,
+)
+const canGenerate = computed(() => sourceTranscripts.value.length > 0 && !hasDraft.value)
+
+function editTranscript(segment: TranscriptSegment) {
+  editingTranscriptId.value = segment.id
+  transcriptDraftOriginal.value = segment.original_text
+  transcriptDraftTranslated.value = segment.translated_text ?? ''
+}
+
+function cancelTranscriptEdit() {
+  editingTranscriptId.value = ''
+  transcriptDraftOriginal.value = ''
+  transcriptDraftTranslated.value = ''
+}
+
+async function saveTranscript(segmentId: string) {
+  if (!transcriptDraftOriginal.value.trim()) {
+    toast.error('Transcript text cannot be empty.')
+    return
+  }
+  savingTranscript.value = true
+  try {
+    await api(`/meetings/${meetingId.value}/transcripts/${segmentId}`, {
+      method: 'PUT',
+      body: {
+        original_text: transcriptDraftOriginal.value.trim(),
+        translated_text: transcriptDraftTranslated.value.trim(),
+      },
+    })
+    await refresh()
+    cancelTranscriptEdit()
+    toast.success('Transcript corrected.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not save the transcript correction.')
+  } finally {
+    savingTranscript.value = false
+  }
+}
+
+function addPoint() {
+  mom.discussionPoints.push('')
+}
+
+function removePoint(index: number) {
+  mom.discussionPoints.splice(index, 1)
+}
+
+function addDecision() {
+  mom.decisions.push({ agendaTopic: '', decisionText: '' })
+}
+
+function removeDecision(index: number) {
+  mom.decisions.splice(index, 1)
+}
+
+function addActionItem() {
+  mom.actionItems.push({ taskDescription: '', assigneeName: '', deadline: '' })
+}
+
+function removeActionItem(index: number) {
+  mom.actionItems.splice(index, 1)
+}
+
+function payload(): MomPayload {
+  return {
+    executive_summary: mom.executiveSummary,
+    discussion_points: mom.discussionPoints.map(point => point.trim()).filter(Boolean),
+    decisions: mom.decisions
+      .filter(decision => decision.decisionText.trim())
+      .map(decision => ({
+        agenda_topic: decision.agendaTopic.trim() || null,
+        decision_text: decision.decisionText.trim(),
+        context_notes: null,
+      })),
+    action_items: mom.actionItems
+      .filter(item => item.taskDescription.trim())
+      .map(item => ({
+        task_description: item.taskDescription.trim(),
+        assignee_name: item.assigneeName.trim() || null,
+        deadline: item.deadline || null,
+        confidence_score: 0.95,
+      })),
+  }
+}
+
+async function generateDraft() {
+  generating.value = true
+  aiError.value = ''
+  try {
+    const result = await api<MinutesOfMeeting>(`/meetings/${meetingId.value}/synthesize-mom`, {
+      method: 'POST',
+    })
+    mom.executiveSummary = result.executive_summary
+    mom.discussionPoints = result.discussion_points
+    mom.decisions = result.decisions.map(decision => ({
+      agendaTopic: decision.agenda_topic ?? '',
+      decisionText: decision.decision_text,
+    }))
+    mom.actionItems = result.action_items.map(item => ({
+      taskDescription: item.task_description,
+      assigneeName: item.assignee_name ?? '',
+      deadline: item.deadline ?? '',
+    }))
+    generated.value = true
+    toast.success('Draft generated. Review every section before publishing.')
+  } catch (err: any) {
+    aiError.value = err?.data?.detail ?? 'Could not generate a draft.'
+  } finally {
+    generating.value = false
+  }
+}
+
+async function saveDraft() {
+  saving.value = true
+  try {
+    const summary = await api<MeetingSummary>(`/meetings/${meetingId.value}/mom-draft`, {
+      method: 'PUT',
+      body: payload(),
+    })
+    hydrate(summary)
+    draftSaved.value = true
+    toast.success('Draft saved.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not save the draft.')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function downloadFile(url: string, filename: string) {
+  try {
+    const blob = await api<Blob>(url, { responseType: 'blob' })
+    const objectUrl = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = objectUrl
+    anchor.download = filename
+    anchor.click()
+    URL.revokeObjectURL(objectUrl)
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Download failed.')
+  }
+}
+
+async function publish() {
+  if (!mom.executiveSummary.trim()) {
+    toast.error('Add an executive summary before publishing.')
+    return
+  }
+  publishing.value = true
+  try {
+    const summary = await api<MeetingSummary>(`/meetings/${meetingId.value}/approve-mom`, {
+      method: 'POST',
+      body: {
+        ...payload(),
+        export_to_google_docs: false,
+        export_to_google_sheets: false,
+      },
+    })
+    hydrate(summary)
+    approveOpen.value = false
+
+    try {
+      await api(`/workspace/meetings/${meetingId.value}/export-docs`, { method: 'POST' })
+    } catch (err: any) {
+      toast.error(err?.data?.detail ?? 'Minutes verified, but the DOCX export failed.')
+    }
+    try {
+      await api(`/workspace/meetings/${meetingId.value}/export-sheets`, { method: 'POST' })
+    } catch (err: any) {
+      toast.error(err?.data?.detail ?? 'Minutes verified, but the CSV export failed.')
+    }
+    await refresh()
+    toast.success('Minutes verified and published.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not publish the minutes.')
+  } finally {
+    publishing.value = false
+  }
+}
+</script>
+
 <template>
-  <div class="space-y-6 max-w-7xl mx-auto">
-    <!-- Top Action Bar -->
-    <div class="bg-white border border-ivory-200 rounded-3xl p-6 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-      <div class="space-y-1">
-        <div class="flex items-center space-x-2">
-          <span class="px-2.5 py-1 rounded-md text-xs font-bold bg-bordeaux-100 text-bordeaux-900 uppercase tracking-wider">
-            Human-in-the-Loop Verification
-          </span>
-          <span class="text-xs text-bordeaux-700 font-medium">• Reviewer: Certified Coordinator</span>
-        </div>
-        <h2 class="text-2xl font-extrabold text-bordeaux-950">
-          Faculty Board Review — Minutes of Meeting (MoM)
-        </h2>
-      </div>
-
-      <!-- Publishing Action (10% Horizon Accent Button) -->
-      <div class="flex items-center space-x-3 w-full sm:w-auto">
-        <button
-          @click="saveDraft"
-          class="px-4 py-2.5 rounded-2xl bg-ivory-200 hover:bg-ivory-300 text-bordeaux-950 font-semibold text-xs transition-all"
-        >
-          Save Draft
-        </button>
-
-        <button
-          @click="approveAndExport"
-          :disabled="isPublishing"
-          class="px-6 py-2.5 rounded-2xl bg-horizon-500 hover:bg-horizon-600 disabled:opacity-50 text-bordeaux-950 font-extrabold text-xs shadow-md transition-all flex items-center space-x-2"
-        >
-          <svg v-if="!isPublishing" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-          </svg>
-          <span v-else class="h-3 w-3 rounded-full border-2 border-bordeaux-950 border-t-transparent animate-spin"></span>
-          <span>{{ isPublishing ? 'Publishing to Workspace...' : 'Approve & Publish to Google Workspace' }}</span>
-        </button>
-      </div>
-    </div>
-
-    <!-- Export Success Notice -->
-    <div
-      v-if="exportResult"
-      class="p-5 rounded-2xl bg-green-50 border border-green-200 text-green-900 flex items-center justify-between shadow-sm animate-fade-in"
+  <div>
+    <NuxtLink
+      to="/meetings"
+      class="mb-4 inline-flex items-center gap-1.5 text-[13px] text-muted-foreground transition-colors hover:text-foreground"
     >
-      <div class="flex items-center space-x-3">
-        <span class="p-2 rounded-xl bg-green-100 text-green-800">
-          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-        </span>
-        <div>
-          <h4 class="font-bold text-sm">Successfully Published to Google Workspace!</h4>
-          <p class="text-xs text-green-800">Formal MoM created in Google Docs • Action items logged to Google Sheets • Gmail alerts sent.</p>
-        </div>
-      </div>
+      <ArrowLeft class="h-3.5 w-3.5" />
+      Meetings
+    </NuxtLink>
 
-      <div class="flex items-center space-x-2">
-        <a
-          :href="exportResult.docUrl"
-          target="_blank"
-          class="px-4 py-2 rounded-xl bg-white border border-green-300 text-green-950 font-bold text-xs shadow-sm hover:bg-green-50 flex items-center space-x-1"
-        >
-          <span>Open Google Doc</span>
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-          </svg>
-        </a>
-      </div>
-    </div>
+    <LoadingState v-if="pending" />
+    <ErrorState v-else-if="error" :message="error.message" @retry="refresh" />
 
-    <!-- Split-Screen Editor (60% Ivory Surface / 30% Bordeaux Structure / 10% Horizon Highlights) -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-      <!-- Left Column: Source Transcript Reference (5 Columns) -->
-      <div class="lg:col-span-5 bg-white border border-ivory-200 rounded-3xl p-6 shadow-sm flex flex-col h-[750px]">
-        <div class="pb-3 border-b border-ivory-200 flex items-center justify-between">
-          <div class="flex items-center space-x-2">
-            <span class="p-1 rounded bg-ivory-200 text-bordeaux-900">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-              </svg>
-            </span>
-            <h3 class="font-bold text-xs uppercase tracking-wider text-bordeaux-950">Source Speech Transcript</h3>
-          </div>
-          <span class="text-[11px] text-bordeaux-700">Chronological</span>
-        </div>
+    <template v-else-if="meeting">
+      <PageHeader
+        title="Minutes review"
+        :description="`${meeting.title} · ${formatDate(meeting.scheduled_start)} · ${formatTimeRange(meeting.scheduled_start, meeting.scheduled_end)}`"
+      >
+        <template #meta>
+          <StatusBadge :status="isVerified ? 'Verified' : 'Draft'" />
+          <span class="text-[13px] text-muted-foreground">{{ itemSummary }}</span>
+        </template>
+        <template #actions>
+          <Button v-if="!isVerified" variant="outline" :disabled="saving || !hasDraft" @click="saveDraft">
+            {{ saving ? 'Saving…' : 'Save draft' }}
+          </Button>
+          <Button v-if="!isVerified" :disabled="publishing || !hasDraft" @click="approveOpen = true">
+            {{ publishing ? 'Publishing…' : 'Approve & publish' }}
+          </Button>
+        </template>
+      </PageHeader>
 
-        <div class="flex-1 overflow-y-auto py-4 space-y-3 pr-2">
-          <div
-            v-for="(seg, idx) in sourceTranscripts"
-            :key="idx"
-            class="p-3.5 rounded-xl bg-ivory-50 border border-ivory-200 text-xs space-y-1 hover:border-horizon-300 transition-colors"
-          >
-            <div class="flex items-center justify-between font-bold text-bordeaux-950">
-              <span>{{ seg.speaker }}</span>
-              <span class="text-[10px] text-bordeaux-600 font-mono">{{ seg.time }}</span>
-            </div>
-            <p class="text-bordeaux-900 font-sans leading-relaxed">{{ seg.khmerText }}</p>
-            <p class="text-[11px] text-bordeaux-700 italic border-l-2 border-horizon-400 pl-2 mt-1">
-              {{ seg.englishText }}
+      <div v-if="isVerified" class="mt-4 flex flex-col gap-3 rounded-lg border border-positive/20 bg-positive-soft px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex items-start gap-2.5">
+          <Check class="mt-0.5 h-4 w-4 text-positive" />
+          <div>
+            <p class="text-sm font-medium text-positive">Minutes verified</p>
+            <p class="mt-0.5 text-[13px] text-positive">
+              This record is read-only. Download the DOCX or the action-item CSV.
             </p>
           </div>
         </div>
+        <div class="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" @click="downloadFile(`/workspace/meetings/${meeting.id}/minutes.docx`, 'minutes.docx')">
+            <Download class="h-3.5 w-3.5" />
+            DOCX
+          </Button>
+          <Button variant="outline" size="sm" @click="downloadFile(`/workspace/meetings/${meeting.id}/action-items.csv`, 'action-items.csv')">
+            <Download class="h-3.5 w-3.5" />
+            CSV
+          </Button>
+        </div>
       </div>
 
-      <!-- Right Column: Interactive Editable MoM Document (7 Columns) -->
-      <div class="lg:col-span-7 bg-white border border-ivory-200 rounded-3xl p-8 shadow-md space-y-6 max-h-[750px] overflow-y-auto">
-        <!-- Document Institutional Header -->
-        <div class="border-b-2 border-bordeaux-900 pb-4 flex items-center justify-between">
-          <div>
-            <h3 class="text-base font-extrabold text-bordeaux-950 tracking-wider">ACLEDA UNIVERSITY OF BUSINESS</h3>
-            <p class="text-xs text-bordeaux-700">Faculty of Science & Technology • Official Minutes of Meeting</p>
-          </div>
-          <span class="text-xs font-bold text-bordeaux-900 px-2.5 py-1 rounded bg-ivory-100 border border-ivory-200">
-            Form MoM-04
-          </span>
-        </div>
-
-        <!-- Section 1: Executive Summary -->
-        <div class="space-y-2">
-          <label class="block text-xs font-bold uppercase tracking-wider text-bordeaux-900 flex items-center justify-between">
-            <span>1. Executive Summary (AI Synthesized)</span>
-            <span class="text-[11px] font-normal text-bordeaux-600">Editable</span>
-          </label>
-          <textarea
-            v-model="mom.executiveSummary"
-            rows="4"
-            class="w-full p-4 text-xs leading-relaxed bg-ivory-50 border border-ivory-200 rounded-2xl text-bordeaux-950 focus:outline-none focus:ring-2 focus:ring-horizon-500 focus:bg-white transition-all font-sans"
-          ></textarea>
-        </div>
-
-        <!-- Section 2: Key Discussion Points -->
-        <div class="space-y-2">
-          <label class="block text-xs font-bold uppercase tracking-wider text-bordeaux-900">
-            2. Key Discussion Points
-          </label>
-          <div class="space-y-2">
-            <div
-              v-for="(point, idx) in mom.discussionPoints"
-              :key="idx"
-              class="flex items-center space-x-2"
-            >
-              <span class="h-2 w-2 rounded-full bg-horizon-500 flex-shrink-0"></span>
-              <input
-                v-model="mom.discussionPoints[idx]"
-                type="text"
-                class="flex-1 px-3 py-2 bg-ivory-50 border border-ivory-200 rounded-xl text-xs text-bordeaux-950 focus:outline-none focus:ring-2 focus:ring-horizon-500"
-              />
+      <div class="mt-4 grid grid-cols-1 items-start gap-4 xl:grid-cols-12">
+        <Card class="flex flex-col xl:col-span-5 xl:h-[calc(100vh-10rem)]">
+          <CardHeader class="flex-row items-start justify-between gap-3 pb-3">
+            <div>
+              <CardTitle>Source transcript</CardTitle>
+              <CardDescription class="mt-1">Correct any misheard Khmer words before generating the draft.</CardDescription>
             </div>
-          </div>
-        </div>
-
-        <!-- Section 3: Formal Agreed Decisions -->
-        <div class="space-y-2">
-          <label class="block text-xs font-bold uppercase tracking-wider text-bordeaux-900">
-            3. Formal Agreed Decisions
-          </label>
-          <div class="divide-y divide-ivory-200 border border-ivory-200 rounded-2xl overflow-hidden">
+            <Badge variant="outline">{{ plural(sourceTranscripts.length, 'segment') }}</Badge>
+          </CardHeader>
+          <div v-if="sourceTranscripts.length" class="max-h-[480px] flex-1 overflow-y-auto border-t p-5 xl:max-h-none">
             <div
-              v-for="(dec, idx) in mom.decisions"
-              :key="idx"
-              class="p-4 bg-ivory-50/50 space-y-1.5"
+              v-for="segment in sourceTranscripts"
+              :key="segment.id"
+              class="border-b py-3.5 first:pt-0 last:border-b-0 last:pb-0"
             >
-              <div class="flex items-center justify-between text-xs font-bold text-bordeaux-900">
-                <span class="text-horizon-800">{{ dec.agendaTopic }}</span>
-                <span class="text-[10px] text-green-700 bg-green-100 px-2 py-0.5 rounded-full font-bold">Unanimous</span>
+              <div class="flex items-center justify-between gap-3">
+                <p class="text-[13px] font-medium">{{ segment.speaker_label }}</p>
+                <div class="flex items-center gap-1.5">
+                  <p class="tabular-nums text-[13px] text-muted-foreground">
+                    {{ Math.floor(segment.start_timestamp / 60).toString().padStart(2, '0') }}:{{ Math.floor(segment.start_timestamp % 60).toString().padStart(2, '0') }}
+                  </p>
+                  <Button
+                    v-if="!isVerified && editingTranscriptId !== segment.id"
+                    variant="ghost"
+                    size="sm"
+                    @click="editTranscript(segment)"
+                  >
+                    Edit
+                  </Button>
+                </div>
               </div>
-              <input
-                v-model="dec.decisionText"
-                class="w-full px-3 py-1.5 bg-white border border-ivory-200 rounded-lg text-xs font-semibold text-bordeaux-950 focus:outline-none focus:ring-1 focus:ring-horizon-500"
-              />
-            </div>
-          </div>
-        </div>
-
-        <!-- Section 4: Action Items Registry -->
-        <div class="space-y-2">
-          <label class="block text-xs font-bold uppercase tracking-wider text-bordeaux-900 flex items-center justify-between">
-            <span>4. Delegated Action Items (Syncs to Google Sheets)</span>
-            <span class="text-[11px] font-semibold text-horizon-700">Auto-Assigned</span>
-          </label>
-
-          <div class="space-y-3">
-            <div
-              v-for="(item, idx) in mom.actionItems"
-              :key="idx"
-              class="p-4 bg-ivory-50 border border-ivory-200 rounded-2xl space-y-3"
-            >
-              <input
-                v-model="item.taskDescription"
-                class="w-full px-3 py-2 bg-white border border-ivory-200 rounded-xl text-xs font-bold text-bordeaux-950 focus:outline-none focus:ring-2 focus:ring-horizon-500"
-              />
-
-              <div class="grid grid-cols-2 gap-3 text-xs">
-                <div>
-                  <label class="block text-[11px] text-bordeaux-700 mb-1 font-medium">Assignee Name</label>
-                  <input
-                    v-model="item.assigneeName"
-                    class="w-full px-3 py-1.5 bg-white border border-ivory-200 rounded-lg text-xs text-bordeaux-950 focus:outline-none focus:ring-1 focus:ring-horizon-500"
-                  />
+              <div v-if="editingTranscriptId === segment.id" class="mt-2 space-y-2">
+                <Textarea
+                  v-model="transcriptDraftOriginal"
+                  data-testid="transcript-original"
+                  rows="4"
+                  class="font-khmer"
+                />
+                <Textarea
+                  v-model="transcriptDraftTranslated"
+                  data-testid="transcript-translation"
+                  rows="3"
+                  placeholder="English translation"
+                />
+                <div class="flex gap-2">
+                  <Button size="sm" :disabled="savingTranscript" @click="saveTranscript(segment.id)">
+                    {{ savingTranscript ? 'Saving…' : 'Save correction' }}
+                  </Button>
+                  <Button size="sm" variant="outline" :disabled="savingTranscript" @click="cancelTranscriptEdit">
+                    Cancel
+                  </Button>
                 </div>
-                <div>
-                  <label class="block text-[11px] text-bordeaux-700 mb-1 font-medium">Target Deadline</label>
-                  <input
-                    v-model="item.deadline"
-                    type="date"
-                    class="w-full px-3 py-1.5 bg-white border border-ivory-200 rounded-lg text-xs text-bordeaux-950 focus:outline-none focus:ring-1 focus:ring-horizon-500"
-                  />
-                </div>
+              </div>
+              <div v-else>
+                <p class="mt-1.5 font-khmer text-sm leading-relaxed">{{ segment.original_text }}</p>
+                <p v-if="segment.translated_text" class="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
+                  {{ segment.translated_text }}
+                </p>
               </div>
             </div>
           </div>
-        </div>
+          <div v-else class="flex flex-1 items-center border-t px-5 py-8">
+            <p class="text-[13px] text-muted-foreground">
+              No transcript segments have been recorded for this meeting.
+            </p>
+          </div>
+        </Card>
+
+        <Card class="flex flex-col xl:col-span-7 xl:h-[calc(100vh-10rem)]">
+          <CardHeader class="pb-3">
+            <CardTitle>Minutes of meeting</CardTitle>
+            <CardDescription>
+              {{ isVerified ? 'These minutes are verified and read-only.' : 'Edit the generated record. The approved version becomes the official minutes.' }}
+            </CardDescription>
+          </CardHeader>
+
+          <CardContent class="flex-1 space-y-6 overflow-y-auto border-t pt-5">
+            <div v-if="!hasDraft" class="rounded-md border border-dashed border-input bg-muted/30 p-4">
+              <p class="text-[13px] font-medium">No draft yet</p>
+              <p class="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+                Generate a draft from {{ sourceTranscripts.length }} transcript segment{{ sourceTranscripts.length === 1 ? '' : 's' }}, then review and edit every section.
+              </p>
+              <p v-if="aiError" class="mt-2 text-[13px] text-negative">{{ aiError }}</p>
+              <Button variant="outline" size="sm" class="mt-3" :disabled="generating || !canGenerate" @click="generateDraft">
+                {{ generating ? 'Generating…' : 'Generate draft' }}
+              </Button>
+            </div>
+
+            <section class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <Label for="mom-summary">Executive summary</Label>
+                <span class="text-[13px] text-muted-foreground">{{ isVerified ? 'Verified' : 'Editable' }}</span>
+              </div>
+              <Textarea id="mom-summary" v-model="mom.executiveSummary" rows="5" :readonly="isVerified" />
+            </section>
+
+            <section class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <Label>Key discussion points</Label>
+                <span class="text-[13px] text-muted-foreground">{{ plural(mom.discussionPoints.length, 'point') }}</span>
+              </div>
+              <div class="space-y-2">
+                <div v-for="(_, index) in mom.discussionPoints" :key="index" class="flex items-start gap-2">
+                  <span class="mt-3 h-1.5 w-1.5 shrink-0 rounded-full bg-brand" aria-hidden="true" />
+                  <Input
+                    v-model="mom.discussionPoints[index]"
+                    :aria-label="`Discussion point ${index + 1}`"
+                    class="flex-1"
+                    :readonly="isVerified"
+                  />
+                  <Button
+                    v-if="!isVerified"
+                    variant="ghost"
+                    size="icon-sm"
+                    :aria-label="`Remove discussion point ${index + 1}`"
+                    @click="removePoint(index)"
+                  >
+                    <X class="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+              <Button v-if="!isVerified" variant="ghost" size="sm" class="px-0 text-brand" @click="addPoint">
+                <Plus class="h-3.5 w-3.5" />
+                Add discussion point
+              </Button>
+            </section>
+
+            <section class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <Label>Formal decisions</Label>
+                <span class="text-[13px] text-muted-foreground">{{ plural(mom.decisions.length, 'decision') }}</span>
+              </div>
+              <div class="divide-y border-y">
+                <div v-for="(_, index) in mom.decisions" :key="index" class="space-y-2 py-3 first:pt-2.5 last:pb-2.5">
+                  <div class="flex items-center gap-2">
+                    <Input
+                      v-model="mom.decisions[index].agendaTopic"
+                      :aria-label="`Decision ${index + 1} agenda topic`"
+                      placeholder="Agenda topic"
+                      class="h-8 max-w-[260px] text-[13px]"
+                      :readonly="isVerified"
+                    />
+                    <Button
+                      v-if="!isVerified"
+                      variant="ghost"
+                      size="icon-sm"
+                      class="ml-auto"
+                      :aria-label="`Remove decision ${index + 1}`"
+                      @click="removeDecision(index)"
+                    >
+                      <X class="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  <Input
+                    v-model="mom.decisions[index].decisionText"
+                    :aria-label="`Decision ${index + 1} text`"
+                    placeholder="What was agreed"
+                    :readonly="isVerified"
+                  />
+                </div>
+              </div>
+              <Button v-if="!isVerified" variant="ghost" size="sm" class="px-0 text-brand" @click="addDecision">
+                <Plus class="h-3.5 w-3.5" />
+                Add decision
+              </Button>
+            </section>
+
+            <section class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <Label>Action items</Label>
+                <span class="text-[13px] text-muted-foreground">{{ plural(mom.actionItems.length, 'action item') }}</span>
+              </div>
+              <div class="divide-y border-y">
+                <div v-for="(_, index) in mom.actionItems" :key="index" class="space-y-2 py-3 first:pt-2.5 last:pb-2.5">
+                  <div class="flex items-start gap-2">
+                    <Input
+                      v-model="mom.actionItems[index].taskDescription"
+                      :aria-label="`Action item ${index + 1} task`"
+                      placeholder="Task description"
+                      class="flex-1"
+                      :readonly="isVerified"
+                    />
+                    <Button
+                      v-if="!isVerified"
+                      variant="ghost"
+                      size="icon-sm"
+                      :aria-label="`Remove action item ${index + 1}`"
+                      @click="removeActionItem(index)"
+                    >
+                      <X class="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <div class="space-y-1">
+                      <Label :for="`action-owner-${index}`" class="text-[13px] text-muted-foreground">Assignee</Label>
+                      <Input :id="`action-owner-${index}`" v-model="mom.actionItems[index].assigneeName" placeholder="Name" :readonly="isVerified" />
+                    </div>
+                    <div class="space-y-1">
+                      <Label :for="`action-deadline-${index}`" class="text-[13px] text-muted-foreground">Deadline</Label>
+                      <Input :id="`action-deadline-${index}`" v-model="mom.actionItems[index].deadline" type="date" :readonly="isVerified" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <Button v-if="!isVerified" variant="ghost" size="sm" class="px-0 text-brand" @click="addActionItem">
+                <Plus class="h-3.5 w-3.5" />
+                Add action item
+              </Button>
+            </section>
+
+            <div class="flex flex-col gap-1 border-t pt-4 text-[13px] text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+              <span>{{ isVerified ? 'Verified record' : draftSaved ? 'Draft saved' : 'Draft · not yet verified' }}</span>
+              <span>{{ itemSummary }}</span>
+            </div>
+          </CardContent>
+        </Card>
       </div>
-    </div>
+
+      <Dialog v-model:open="approveOpen">
+        <DialogContent data-testid="approve-minutes">
+          <DialogHeader>
+            <DialogTitle>Publish these minutes?</DialogTitle>
+            <DialogDescription>
+              This marks the record verified. The export creates a local DOCX and CSV from the stored minutes.
+            </DialogDescription>
+          </DialogHeader>
+          <div class="rounded-md border bg-muted/40 p-3 text-[13px] text-muted-foreground">
+            <p class="font-medium text-foreground">{{ meeting.title }}</p>
+            <p class="mt-1">{{ itemSummary }}</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" :disabled="publishing" @click="approveOpen = false">Cancel</Button>
+            <Button :disabled="publishing" @click="publish">
+              <span v-if="publishing" class="h-3 w-3 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
+              {{ publishing ? 'Publishing…' : 'Confirm & publish' }}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </template>
   </div>
 </template>
-
-<script setup lang="ts">
-import { ref } from 'vue'
-
-const isPublishing = ref(false)
-const exportResult = ref<any | null>(null)
-
-const sourceTranscripts = ref([
-  {
-    speaker: 'Dean Lay Thou',
-    time: '00:02:15',
-    khmerText: 'សូមជម្រាបសួរលោកគ្រូអ្នកគ្រូទាំងអស់គ្នា ថ្ងៃនេះយើងប្រជុំ review the project proposal របស់ក្រុមទី ៤.',
-    englishText: 'Good morning everyone, today we meet to review Group 4\'s project proposal.'
-  },
-  {
-    speaker: 'Khorn Molika',
-    time: '00:05:40',
-    khmerText: 'យើងបាន deploy Chrome extension ដើម្បី capture Meet audio ហើយ stream តាម WebSockets.',
-    englishText: 'We deployed the Chrome extension to capture Meet audio and stream over WebSockets.'
-  },
-  {
-    speaker: 'Dean Lay Thou',
-    time: '00:14:10',
-    khmerText: 'Dean Office បាន approve budget សម្រាប់ compute node RTX 4090.',
-    englishText: 'The Dean\'s Office has approved the budget for the RTX 4090 compute node.'
-  },
-  {
-    speaker: 'Em Panharith',
-    time: '00:22:30',
-    khmerText: 'ខ្ញុំនឹងរៀបចំ Docker orchestration សម្រាប់ local speech tier មុនថ្ងៃសុក្រ.',
-    englishText: 'I will prepare the Docker orchestration for the local speech tier before Friday.'
-  }
-])
-
-const mom = ref({
-  executiveSummary: 'During the Faculty Board Review session at ACLEDA University of Business, committee members formally evaluated Group 4\'s Design Science Research project. The system successfully demonstrated bilingual speech transcription, Google Gemini 1.5 Pro decision mining, and direct synchronization with Google Workspace.',
-  discussionPoints: [
-    'Evaluated DSRM engineering artifacts and 6-phase research lifecycle.',
-    'Reviewed bilingual code-switching WER metrics and Netra-NMT translation adequacy.',
-    'Confirmed data privacy enclaves ensuring raw meeting audio remains on local campus hardware.'
-  ],
-  decisions: [
-    {
-      agendaTopic: 'Hardware Infrastructure Approval',
-      decisionText: 'Approved procurement and deployment of on-premise NVIDIA RTX 4090 GPU node for local speech tier inference.'
-    },
-    {
-      agendaTopic: 'MoM Verification Policy',
-      decisionText: 'Mandated strict human-in-the-loop verification before exporting official administrative records to Google Docs.'
-    }
-  ],
-  actionItems: [
-    {
-      taskDescription: 'Finalize Docker containerization and Alembic database migration scripts for campus deployment.',
-      assigneeName: 'Em Panharith',
-      deadline: '2026-11-20'
-    },
-    {
-      taskDescription: 'Configure Google Cloud OAuth 2.0 credentials and least-privilege REST scopes.',
-      assigneeName: 'Khorn Molika',
-      deadline: '2026-11-21'
-    }
-  ]
-})
-
-function saveDraft() {
-  alert('Draft Minutes of Meeting saved to institutional PostgreSQL database.')
-}
-
-async function approveAndExport() {
-  isPublishing.value = true
-  setTimeout(() => {
-    isPublishing.value = false
-    exportResult.value = {
-      docId: '1aub_mom_99f2a',
-      docUrl: 'https://docs.google.com/document/d/1aub_mom_99f2a/edit',
-      sheetId: '1aub_tasks_45b8e',
-      sheetUrl: 'https://docs.google.com/spreadsheets/d/1aub_tasks_45b8e/edit'
-    }
-  }, 1200)
-}
-</script>

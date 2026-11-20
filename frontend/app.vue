@@ -3,9 +3,10 @@
     <NuxtLayout>
       <NuxtPage />
     </NuxtLayout>
+    <Toaster position="bottom-right" :duration="2600" />
   </div>
 </template>
 
 <script setup lang="ts">
-// Global application setup
+import { Toaster } from 'vue-sonner'
 </script>

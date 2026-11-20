@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from scalar_fastapi import get_scalar_api_reference
 
 from app.core.config import settings
 from app.core.database import engine, Base, AsyncSessionLocal
@@ -83,7 +84,21 @@ app = FastAPI(
     version="1.0.0",
     description="Automated Document and Meeting Management Ecosystem for ACLEDA University of Business.",
     lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
 )
+
+# Scalar API reference replaces the default Swagger UI.
+@app.get("/docs", include_in_schema=False)
+async def scalar_api_reference():
+    return get_scalar_api_reference(
+        openapi_url=app.openapi_url,
+        title=f"{settings.APP_NAME} — API Reference",
+        layout="modern",
+        theme="default",
+        telemetry=False,
+        with_default_fonts=True,
+    )
 
 # CORS
 app.add_middleware(

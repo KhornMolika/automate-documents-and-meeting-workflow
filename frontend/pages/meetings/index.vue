@@ -1,124 +1,364 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { CalendarDays, Plus } from 'lucide-vue-next'
+import { toast } from 'vue-sonner'
+import { Button } from '~/components/ui/button'
+import { Card, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '~/components/ui/dialog'
+import { Input } from '~/components/ui/input'
+import { Label } from '~/components/ui/label'
+import { Textarea } from '~/components/ui/textarea'
+import EmptyState from '~/components/workspace/EmptyState.vue'
+import ErrorState from '~/components/workspace/ErrorState.vue'
+import LoadingState from '~/components/workspace/LoadingState.vue'
+import PageHeader from '~/components/workspace/PageHeader.vue'
+import StatusBadge from '~/components/workspace/StatusBadge.vue'
+import { useApi } from '~/composables/useApi'
+import { useAuth } from '~/composables/useAuth'
+import { formatDate, formatTimeRange, plural } from '~/lib/format'
+import type { Dashboard, Meeting } from '~/types/api'
+
+useHead({ title: 'Meetings · ACLEDA University' })
+
+const api = useApi()
+const { user } = useAuth()
+const { data, pending, error, refresh } = await useAsyncData('meetings-page', async () => {
+  const [meetings, dashboard] = await Promise.all([
+    api<Meeting[]>('/meetings', { query: { limit: 200 } }),
+    api<Dashboard>('/dashboard'),
+  ])
+  return { meetings, dashboard }
+})
+
+const meetingList = computed(() => data.value?.meetings ?? [])
+const dashboard = computed(() => data.value?.dashboard)
+const departmentName = computed(() => user.value?.department?.name ?? 'Department workspace')
+const activeFilter = ref<'all' | 'live' | 'scheduled' | 'completed'>('all')
+const newMeetingOpen = ref(false)
+const saving = ref(false)
+const showMore = ref(false)
+const meetingForm = ref({
+  title: '',
+  description: '',
+  agenda: '',
+})
+
+function resetMeetingForm() {
+  meetingForm.value = {
+    title: '',
+    description: '',
+    agenda: '',
+  }
+  showMore.value = false
+}
+
+resetMeetingForm()
+
+watch(newMeetingOpen, (open) => {
+  if (open) resetMeetingForm()
+})
+
+const filters = computed(() => [
+  { value: 'all' as const, label: 'All', count: meetingList.value.length },
+  {
+    value: 'live' as const,
+    label: 'Live',
+    count: meetingList.value.filter(meeting => meeting.status === 'In Progress').length,
+  },
+  {
+    value: 'scheduled' as const,
+    label: 'Scheduled',
+    count: meetingList.value.filter(meeting => meeting.status === 'Scheduled').length,
+  },
+  {
+    value: 'completed' as const,
+    label: 'Completed',
+    count: meetingList.value.filter(meeting => meeting.status === 'Completed').length,
+  },
+])
+
+const filteredMeetings = computed(() => {
+  if (activeFilter.value === 'all') return meetingList.value
+  if (activeFilter.value === 'live') {
+    return meetingList.value.filter(meeting => meeting.status === 'In Progress')
+  }
+  if (activeFilter.value === 'scheduled') {
+    return meetingList.value.filter(meeting => meeting.status === 'Scheduled')
+  }
+  return meetingList.value.filter(meeting => meeting.status === 'Completed')
+})
+
+const recentDecisions = computed(() => dashboard.value?.recent_decisions ?? [])
+const openActionItems = computed(() => dashboard.value?.action_items ?? [])
+
+async function addMeeting() {
+  const departmentId = user.value?.department_id
+  if (!departmentId) {
+    toast.error('Your account has no department. Ask an administrator to assign one.')
+    return
+  }
+  const title = meetingForm.value.title.trim() || `${departmentName.value} meeting`
+  const start = new Date()
+  const end = new Date(start.getTime() + 30 * 60_000)
+
+  saving.value = true
+  try {
+    await api('/meetings', {
+      method: 'POST',
+      body: {
+        title,
+        description: meetingForm.value.description.trim() || null,
+        scheduled_start: start.toISOString(),
+        scheduled_end: end.toISOString(),
+        department_id: departmentId,
+        agendas: meetingForm.value.agenda
+          .split('\n')
+          .map(item => item.trim())
+          .filter(Boolean)
+          .map((item, index) => ({
+            item_order: index + 1,
+            title: item,
+            description: null,
+            duration_minutes: 15,
+          })),
+      },
+    })
+    await refresh()
+    newMeetingOpen.value = false
+    resetMeetingForm()
+    toast.success('Meeting created.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not create the meeting.')
+  } finally {
+    saving.value = false
+  }
+}
+
+function reviewLink(meetingId: string) {
+  return `/meetings/${meetingId}/review`
+}
+
+function itemDue(deadline?: string | null) {
+  return deadline ? formatDate(deadline) : 'No deadline'
+}
+</script>
+
 <template>
-  <div class="space-y-8 max-w-7xl mx-auto">
-    <!-- Header -->
-    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-      <div>
-        <h2 class="text-2xl font-extrabold text-bordeaux-950 sm:text-3xl">Meeting Intelligence & MoM Governance</h2>
-        <p class="text-xs text-bordeaux-700 mt-1">
-          Bilingual Khmer-English speech transcription, Gemini decision mining, and automated Google Workspace compilation.
+  <div>
+    <PageHeader
+      title="Meetings"
+      :description="`Scheduled sessions, live captures and verified minutes in ${departmentName}.`"
+    >
+      <template #actions>
+        <Button variant="outline" @click="newMeetingOpen = true">
+          <Plus class="h-4 w-4" />
+          New meeting
+        </Button>
+      </template>
+    </PageHeader>
+
+    <LoadingState v-if="pending" class="mt-6" />
+    <ErrorState v-else-if="error" class="mt-6" :message="error.message" @retry="refresh" />
+
+    <template v-else>
+      <div class="mt-6 flex flex-wrap items-end justify-between gap-3 border-b">
+        <div class="flex items-center gap-1" role="tablist" aria-label="Filter meetings">
+          <button
+            v-for="filter in filters"
+            :key="filter.value"
+            role="tab"
+            :aria-selected="activeFilter === filter.value"
+            class="relative inline-flex h-9 items-center gap-1.5 px-3 text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+            :class="
+              activeFilter === filter.value
+                ? 'text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-brand after:content-[\'\']'
+                : ''
+            "
+            @click="activeFilter = filter.value"
+          >
+            {{ filter.label }}
+            <span class="tabular-nums text-[13px] text-muted-foreground">{{ filter.count }}</span>
+          </button>
+        </div>
+        <p v-if="dashboard?.live_meeting" class="pb-2 text-[13px] text-muted-foreground">
+          {{ dashboard.live_meeting.title }} is live
         </p>
       </div>
 
-      <NuxtLink
-        to="/meetings/demo-meeting-01/live"
-        class="px-5 py-2.5 rounded-2xl bg-horizon-500 hover:bg-horizon-600 text-bordeaux-950 font-bold text-sm shadow-md transition-all flex items-center space-x-2 self-start sm:self-auto"
+      <Card v-if="filteredMeetings.length" class="mt-4 overflow-hidden" data-testid="meeting-list">
+        <div
+          v-for="meeting in filteredMeetings"
+          :key="meeting.id"
+          class="flex flex-col gap-3 border-b px-5 py-4 last:border-b-0 sm:flex-row sm:items-center"
+          data-testid="meeting-row"
+        >
+          <div class="w-28 shrink-0">
+            <p class="text-sm font-medium">{{ formatDate(meeting.scheduled_start) }}</p>
+            <p class="mt-0.5 tabular-nums text-[13px] text-muted-foreground">
+              {{ formatTimeRange(meeting.scheduled_start, meeting.scheduled_end) }}
+            </p>
+          </div>
+
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-2">
+              <p class="truncate text-sm font-medium">{{ meeting.title }}</p>
+              <StatusBadge :status="meeting.status" />
+            </div>
+            <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground">
+              <span>{{ plural(meeting.participant_count, 'participant') }}</span>
+              <span aria-hidden="true">·</span>
+              <span>{{ plural(meeting.agendas.length, 'agenda item') }}</span>
+              <span v-if="meeting.summary?.is_verified" aria-hidden="true">·</span>
+              <span v-if="meeting.summary?.is_verified">Minutes verified</span>
+            </p>
+          </div>
+
+          <div class="flex shrink-0 items-center gap-2">
+            <Button v-if="meeting.status === 'In Progress'" as-child size="sm">
+              <NuxtLink :to="`/meetings/${meeting.id}/live`">Open live</NuxtLink>
+            </Button>
+            <Button v-else-if="meeting.status === 'Scheduled'" as-child size="sm" variant="outline">
+              <NuxtLink :to="`/meetings/${meeting.id}/live`">Open console</NuxtLink>
+            </Button>
+            <Button v-else-if="meeting.status === 'Completed'" as-child size="sm" variant="outline">
+              <NuxtLink :to="reviewLink(meeting.id)">View minutes</NuxtLink>
+            </Button>
+          </div>
+        </div>
+        <div class="flex items-center justify-between px-5 py-3 text-[13px] text-muted-foreground">
+          <span>{{ filteredMeetings.length }} of {{ plural(meetingList.length, 'meeting') }}</span>
+          <span class="flex items-center gap-1.5">
+            <CalendarDays class="h-3.5 w-3.5" />
+            {{ departmentName }}
+          </span>
+        </div>
+      </Card>
+
+      <EmptyState
+        v-else
+        class="mt-4"
+        :title="meetingList.length ? 'No meetings in this view' : 'No meetings yet'"
+        :description="meetingList.length ? 'Switch the filter to see the other meetings.' : 'Schedule the first meeting to prepare an agenda and minutes.'"
       >
-        <span class="h-2.5 w-2.5 rounded-full bg-bordeaux-950 animate-ping"></span>
-        <span>Enter Live Meeting Console</span>
-      </NuxtLink>
-    </div>
+        <Button variant="outline" size="sm" class="mt-3" @click="newMeetingOpen = true">
+          <Plus class="h-4 w-4" />
+          New meeting
+        </Button>
+      </EmptyState>
 
-    <!-- Active Sessions Grid -->
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-      <!-- Session 1: In Progress -->
-      <div class="bg-white border-2 border-horizon-300 rounded-3xl p-6 shadow-md space-y-5 relative overflow-hidden">
-        <div class="absolute top-0 right-0 bg-horizon-500 text-bordeaux-950 font-extrabold text-[11px] px-3 py-1 rounded-bl-2xl uppercase tracking-wider">
-          Live Ingress Active
-        </div>
-
-        <div class="space-y-2">
-          <div class="flex items-center space-x-2">
-            <span class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
-            <span class="text-xs font-bold text-green-700 uppercase tracking-wider">Google Meet Connected</span>
+      <div class="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <Card class="flex flex-col lg:col-span-7">
+          <CardHeader class="pb-3">
+            <CardTitle>Recent decisions</CardTitle>
+            <CardDescription class="mt-1">Agreed outcomes from verified minutes.</CardDescription>
+          </CardHeader>
+          <div v-if="recentDecisions.length" class="flex-1 border-t">
+            <div
+              v-for="decision in recentDecisions"
+              :key="decision.id"
+              class="flex items-start gap-3 border-b px-5 py-3 last:border-b-0"
+            >
+              <div class="min-w-0 flex-1">
+                <p class="text-[13px] leading-snug">{{ decision.text }}</p>
+                <p class="mt-1 text-[13px] text-muted-foreground">
+                  {{ decision.meeting_title }} · {{ formatDate(decision.date) }}
+                </p>
+              </div>
+              <NuxtLink
+                :to="reviewLink(decision.meeting_id)"
+                class="shrink-0 text-[13px] font-medium text-brand hover:underline"
+              >
+                Minutes
+              </NuxtLink>
+            </div>
           </div>
-          <h3 class="text-xl font-extrabold text-bordeaux-950">
-            Faculty Board Review: Research Methodology Proposals
-          </h3>
-          <p class="text-xs text-bordeaux-700 leading-relaxed">
-            Chair: Dean Lay Thou • Group 4 Thesis Presentation • Department of Computer Science
-          </p>
-        </div>
-
-        <!-- Agendas -->
-        <div class="p-4 rounded-2xl bg-ivory-50 border border-ivory-200 space-y-2">
-          <h4 class="text-xs font-bold text-bordeaux-900 uppercase tracking-wider">Scheduled Agendas</h4>
-          <ol class="list-decimal list-inside text-xs text-bordeaux-800 space-y-1">
-            <li>Review DSRM architectural methodology and empirical metrics</li>
-            <li>Omnilingual-ASR-Khm and Netra-NMT evaluation benchmarks</li>
-            <li>Google Workspace REST pipeline and action-item tracking</li>
-          </ol>
-        </div>
-
-        <!-- Telemetry -->
-        <div class="flex items-center justify-between text-xs text-bordeaux-700 pt-2 border-t border-ivory-200">
-          <span>Captured via WXT Extension (16kHz PCM)</span>
-          <span class="font-bold text-horizon-700">Latency: 1.48s (p95)</span>
-        </div>
-
-        <div class="flex items-center space-x-3 pt-2">
-          <NuxtLink
-            to="/meetings/demo-meeting-01/live"
-            class="flex-1 py-2.5 rounded-xl bg-horizon-500 hover:bg-horizon-600 text-bordeaux-950 font-bold text-xs text-center shadow-sm transition-all"
-          >
-            Open Live Captions & Waveform
-          </NuxtLink>
-          <NuxtLink
-            to="/meetings/demo-meeting-01/review"
-            class="py-2.5 px-4 rounded-xl bg-ivory-200 hover:bg-ivory-300 text-bordeaux-900 font-semibold text-xs transition-all"
-          >
-            Review MoM Draft
-          </NuxtLink>
-        </div>
-      </div>
-
-      <!-- Session 2: Completed -->
-      <div class="bg-white border border-ivory-200 rounded-3xl p-6 shadow-sm space-y-5">
-        <div class="space-y-2">
-          <div class="flex items-center space-x-2">
-            <span class="px-2 py-0.5 rounded text-[11px] font-bold bg-bordeaux-100 text-bordeaux-900">
-              Verified & Published
-            </span>
-            <span class="text-xs text-bordeaux-700">Nov 10, 2026</span>
+          <div v-else class="flex flex-1 items-center border-t px-5 py-6">
+            <p class="text-[13px] text-muted-foreground">No verified decisions yet.</p>
           </div>
-          <h3 class="text-xl font-extrabold text-bordeaux-950">
-            AUB Departmental Budget & Infrastructure Planning
-          </h3>
-          <p class="text-xs text-bordeaux-700 leading-relaxed">
-            Authorized by Academic Affairs Office • MoM distributed via Gmail API
-          </p>
-        </div>
+        </Card>
 
-        <div class="p-4 rounded-2xl bg-ivory-50 border border-ivory-200 space-y-2">
-          <h4 class="text-xs font-bold text-bordeaux-900 uppercase tracking-wider">Executive Outcomes</h4>
-          <p class="text-xs text-bordeaux-800 leading-relaxed">
-            Approved allocation for on-premise NVIDIA RTX 4090 GPU node to host local speech models for data sovereignty.
-          </p>
-        </div>
-
-        <div class="flex items-center justify-between text-xs text-bordeaux-700 pt-2 border-t border-ivory-200">
-          <span>SUS Evaluation Score: 86.8/100</span>
-          <span class="text-green-700 font-semibold">Docs & Sheets Synced</span>
-        </div>
-
-        <div class="flex items-center space-x-3 pt-2">
-          <a
-            href="https://docs.google.com"
-            target="_blank"
-            class="flex-1 py-2.5 rounded-xl bg-white border border-ivory-300 hover:bg-ivory-100 text-bordeaux-950 font-bold text-xs text-center flex items-center justify-center space-x-1 transition-all"
-          >
-            <span>Open Google Doc MoM</span>
-            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-            </svg>
-          </a>
-          <NuxtLink
-            to="/meetings/demo-meeting-01/review"
-            class="py-2.5 px-4 rounded-xl bg-ivory-200 hover:bg-ivory-300 text-bordeaux-900 font-semibold text-xs transition-all"
-          >
-            Inspect Audit Trail
-          </NuxtLink>
-        </div>
+        <Card class="flex flex-col lg:col-span-5">
+          <CardHeader class="pb-3">
+            <CardTitle>Open action items</CardTitle>
+            <CardDescription class="mt-1">Tasks from verified minutes that are not complete.</CardDescription>
+          </CardHeader>
+          <div v-if="openActionItems.length" class="flex-1 border-t">
+            <div
+              v-for="item in openActionItems"
+              :key="item.id"
+              class="flex items-center gap-3 border-b px-5 py-3 last:border-b-0"
+            >
+              <div class="min-w-0 flex-1">
+                <p class="line-clamp-1 text-[13px] font-medium">{{ item.task }}</p>
+                <p class="mt-0.5 text-[13px] text-muted-foreground">
+                  {{ item.assignee || 'Unassigned' }} · due {{ itemDue(item.deadline) }}
+                </p>
+              </div>
+              <StatusBadge :status="item.status" />
+            </div>
+          </div>
+          <div v-else class="flex flex-1 items-center border-t px-5 py-6">
+            <p class="text-[13px] text-muted-foreground">No open action items.</p>
+          </div>
+        </Card>
       </div>
-    </div>
+    </template>
+
+    <Dialog v-model:open="newMeetingOpen">
+      <DialogContent class="max-w-lg" data-testid="new-meeting">
+        <DialogHeader>
+          <DialogTitle>New meeting</DialogTitle>
+          <DialogDescription>
+            Just create it. The start time and department are prepared for you.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div class="space-y-4">
+          <div class="space-y-1.5">
+            <Label for="meeting-title">
+              Title
+              <span class="font-normal text-muted-foreground">(optional)</span>
+            </Label>
+            <Input id="meeting-title" v-model="meetingForm.title" placeholder="e.g. Research Committee review" />
+            <p class="text-[12px] text-muted-foreground">
+              Left blank, it becomes “{{ departmentName }} meeting”.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            class="text-[13px] font-medium text-brand hover:underline"
+            @click="showMore = !showMore"
+          >
+            {{ showMore ? 'Hide optional details' : 'Add description or agenda (optional)' }}
+          </button>
+
+          <div v-if="showMore" class="space-y-4">
+            <div class="space-y-1.5">
+              <Label for="meeting-description">Description</Label>
+              <Input id="meeting-description" v-model="meetingForm.description" placeholder="Optional context" />
+            </div>
+            <div class="space-y-1.5">
+              <Label for="meeting-agenda">Agenda</Label>
+              <Textarea id="meeting-agenda" v-model="meetingForm.agenda" rows="3" placeholder="One item per line" />
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" :disabled="saving" @click="newMeetingOpen = false">Cancel</Button>
+          <Button :disabled="saving" @click="addMeeting">
+            {{ saving ? 'Creating…' : 'Create meeting' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>

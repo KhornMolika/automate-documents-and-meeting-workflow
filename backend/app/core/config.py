@@ -42,6 +42,18 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-1.5-pro"
 
+    # Generative LLM provider: auto | gemini | ollama | opencode
+    # auto uses Gemini when GEMINI_API_KEY is set, otherwise the local Ollama model.
+    LLM_PROVIDER: str = "auto"
+    AUTO_SUMMARIZE_ON_UPLOAD: bool = False
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "qwen2.5:7b"
+    OLLAMA_TIMEOUT_SECONDS: int = 300
+    OPENCODE_BASE_URL: str = "https://opencode.ai/inference/openai/v1"
+    OPENCODE_API_KEY: str = ""
+    OPENCODE_MODEL: str = "gemini-3.8-flash"
+    OPENCODE_SESSION: str = "aub-workflow"
+
     # Google Workspace OAuth 2.0
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
@@ -51,6 +63,9 @@ class Settings(BaseSettings):
     # File storage limits
     MAX_UPLOAD_SIZE_MB: int = 50
     ALLOWED_EXTENSIONS: List[str] = ["pdf", "docx", "xlsx", "csv"]
+
+    # Local speech service
+    SPEECH_SERVICE_URL: str = "http://localhost:8001"
 
 
 settings = Settings()

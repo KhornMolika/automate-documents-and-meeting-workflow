@@ -12,9 +12,9 @@ from app.core.database import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.models.document import Document, DocumentVersion, DocumentCategory
-from app.schemas.document import DocumentOut, DocumentSearchResponse
+from app.schemas.document import DocumentOut, DocumentSearchResponse, CategoryOut
 from app.services.extractor import extract_text, compute_sha256
-from app.services.gemini_service import gemini_service
+from app.services.llm_service import llm_service, AIServiceUnavailable
 
 router = APIRouter(prefix="/documents", tags=["Document Management"])
 
@@ -48,7 +48,12 @@ async def upload_document(
     checksum = compute_sha256(file_bytes)
 
     # 3. Check for duplicates in the same department
-    dept_id = current_user.department_id or "default-dept"
+    dept_id = current_user.department_id
+    if not dept_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Your account is not assigned to a department. Contact an administrator.",
+        )
     dup_stmt = (
         select(DocumentVersion)
         .join(Document)
@@ -68,10 +73,16 @@ async def upload_document(
     # 5. Document title
     doc_title = title or file.filename.rsplit(".", 1)[0].replace("_", " ").title()
 
-    # 6. AI Summarization & Entity Extraction via Gemini
-    ai_result = await gemini_service.summarize_document(doc_title, extracted_text)
-    abstract_summary = ai_result.get("abstract_summary", "")
-    entities_json = json.dumps(ai_result.get("entities", {}))
+    # 6. AI summarization is opt-in so uploads stay fast (local models can be slow).
+    ai_result = {}
+    if settings.AUTO_SUMMARIZE_ON_UPLOAD:
+        try:
+            ai_result = await llm_service.summarize_document(doc_title, extracted_text)
+        except AIServiceUnavailable:
+            # The document is still saved; the UI can retry summarization later.
+            ai_result = {}
+    abstract_summary = ai_result.get("abstract_summary")
+    entities_json = json.dumps(ai_result.get("entities")) if ai_result.get("entities") is not None else None
 
     # 7. Store file locally (or cloud drive pointer)
     os.makedirs("./uploads", exist_ok=True)
@@ -192,6 +203,50 @@ async def search_documents(
         "items": docs,
         "query_latency_ms": round(latency_ms, 2)
     }
+
+
+@router.get("/categories", response_model=List[CategoryOut])
+async def list_categories(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    result = await db.execute(select(DocumentCategory).order_by(DocumentCategory.name))
+    return result.scalars().all()
+
+
+@router.post("/{document_id}/summarize", response_model=DocumentOut)
+async def summarize_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    stmt = (
+        select(Document)
+        .where(Document.id == document_id)
+        .options(selectinload(Document.category), selectinload(Document.versions))
+    )
+    document = (await db.execute(stmt)).scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not document.versions:
+        raise HTTPException(status_code=400, detail="Document has no stored version.")
+    version = document.versions[0]
+    if not version.extracted_text:
+        raise HTTPException(status_code=400, detail="No extracted text is available to summarize.")
+
+    try:
+        result = await llm_service.summarize_document(document.title, version.extracted_text)
+    except AIServiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    version.abstract_summary = result.get("abstract_summary")
+    version.extracted_entities = (
+        json.dumps(result.get("entities")) if result.get("entities") is not None else None
+    )
+    await db.commit()
+    await db.refresh(version)
+    document.latest_version = version
+    return document
 
 
 @router.get("/{document_id}", response_model=DocumentOut)

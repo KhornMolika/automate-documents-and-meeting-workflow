@@ -7,6 +7,10 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 # Ensure backend root is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+# Keep tests hermetic: never call a real LLM provider (Ollama, Gemini or OpenCode).
+os.environ["LLM_PROVIDER"] = "gemini"
+os.environ["GEMINI_API_KEY"] = ""
+
 from app.core.database import Base, get_db
 from app.main import app
 
