@@ -9,6 +9,7 @@ from app.models.meeting import (
     MeetingSummary,
     Decision,
     ActionItem,
+    TranscriptionJob,
 )
 from app.models.audit import AuditLog
 
@@ -28,5 +29,6 @@ __all__ = [
     "MeetingSummary",
     "Decision",
     "ActionItem",
+    "TranscriptionJob",
     "AuditLog",
 ]

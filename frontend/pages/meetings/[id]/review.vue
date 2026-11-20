@@ -1,7 +1,17 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ArrowLeft, Check, Download, Plus, X } from 'lucide-vue-next'
+import {
+  ArrowLeft,
+  Check,
+  Download,
+  FileAudio,
+  FileText,
+  Link2,
+  Plus,
+  Upload,
+  X,
+} from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
@@ -23,23 +33,33 @@ import PageHeader from '~/components/workspace/PageHeader.vue'
 import StatusBadge from '~/components/workspace/StatusBadge.vue'
 import { useApi } from '~/composables/useApi'
 import { formatDate, formatTimeRange, parseDiscussionPoints, plural } from '~/lib/format'
-import type { Meeting, MeetingSummary, MinutesOfMeeting, MomPayload, TranscriptSegment } from '~/types/api'
+import type {
+  Meeting,
+  MeetingSummary,
+  MinutesOfMeeting,
+  MomPayload,
+  TranscriptSegment,
+  TranscriptionJob,
+} from '~/types/api'
 
-useHead({ title: 'Minutes review · ACLEDA University' })
+useHead({ title: 'Meeting workspace · ACLEDA University' })
 
 const route = useRoute()
 const api = useApi()
 const meetingId = computed(() => String(route.params.id))
-const { data, pending, error, refresh } = await useAsyncData(`review-${meetingId.value}`, async () => {
-  const [meeting, transcripts] = await Promise.all([
+
+const { data, pending, error, refresh } = await useAsyncData(`workspace-${meetingId.value}`, async () => {
+  const [meeting, transcripts, transcription] = await Promise.all([
     api<Meeting>(`/meetings/${meetingId.value}`),
     api<TranscriptSegment[]>(`/meetings/${meetingId.value}/transcripts`),
+    api<TranscriptionJob | null>(`/meetings/${meetingId.value}/transcription`),
   ])
-  return { meeting, transcripts }
+  return { meeting, transcripts, transcription }
 })
 
 const meeting = computed(() => data.value?.meeting)
 const sourceTranscripts = computed(() => data.value?.transcripts ?? [])
+const transcription = ref<TranscriptionJob | null>(null)
 const mom = reactive({
   executiveSummary: '',
   discussionPoints: [] as string[],
@@ -52,12 +72,39 @@ const generating = ref(false)
 const saving = ref(false)
 const publishing = ref(false)
 const approveOpen = ref(false)
+const inputOpen = ref(false)
 const draftSaved = ref(false)
 const aiError = ref('')
 const editingTranscriptId = ref('')
+const transcriptDraftSpeaker = ref('')
 const transcriptDraftOriginal = ref('')
-const transcriptDraftTranslated = ref('')
 const savingTranscript = ref(false)
+
+const inputTab = ref('recording')
+const recordingFile = ref<File | null>(null)
+const recordingLanguage = ref('km')
+const linkUrl = ref('')
+const linkLanguage = ref('km')
+const transcriptFile = ref<File | null>(null)
+const transcriptText = ref('')
+const submitting = ref(false)
+const inputError = ref('')
+
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+const isProcessing = computed(() => {
+  const status = transcription.value?.status
+  return status === 'queued' || status === 'processing'
+})
+
+const meetingState = computed(() => {
+  if (transcription.value?.status === 'queued' || transcription.value?.status === 'processing') return 'Transcribing'
+  if (transcription.value?.status === 'failed') return 'Transcription failed'
+  if (meeting.value?.summary?.is_verified) return 'Published'
+  if (meeting.value?.summary) return 'Draft'
+  if (sourceTranscripts.value.length) return 'Transcript ready'
+  return 'Scheduled'
+})
 
 function hydrate(summary?: MeetingSummary | null) {
   if (!summary) {
@@ -66,6 +113,7 @@ function hydrate(summary?: MeetingSummary | null) {
     mom.decisions = []
     mom.actionItems = []
     isVerified.value = false
+    generated.value = false
     return
   }
   mom.executiveSummary = summary.executive_summary
@@ -83,7 +131,14 @@ function hydrate(summary?: MeetingSummary | null) {
   generated.value = true
 }
 
-watch(meeting, value => hydrate(value?.summary), { immediate: true })
+watch(
+  data,
+  value => {
+    transcription.value = value?.transcription ?? null
+    hydrate(value?.meeting?.summary)
+  },
+  { immediate: true },
+)
 
 const itemSummary = computed(() => `${plural(mom.decisions.length, 'decision')} · ${plural(mom.actionItems.length, 'action item')}`)
 const hasDraft = computed(() =>
@@ -94,18 +149,172 @@ const hasDraft = computed(() =>
   || mom.decisions.length > 0
   || mom.actionItems.length > 0,
 )
-const canGenerate = computed(() => sourceTranscripts.value.length > 0 && !hasDraft.value)
+const canGenerate = computed(() => sourceTranscripts.value.length > 0 && !hasDraft.value && !isVerified.value)
+
+const steps = computed(() => [
+  {
+    label: 'Transcript',
+    state: sourceTranscripts.value.length ? 'done' : isProcessing.value ? 'current' : 'todo',
+  },
+  {
+    label: 'Minutes',
+    state: isVerified.value ? 'done' : hasDraft.value ? 'current' : 'todo',
+  },
+  {
+    label: 'Published',
+    state: isVerified.value ? 'done' : 'todo',
+  },
+] as { label: string, state: 'done' | 'current' | 'todo' }[])
+
+function startPolling() {
+  if (!import.meta.client) return
+  stopPolling()
+  pollTimer = setInterval(async () => {
+    try {
+      const job = await api<TranscriptionJob | null>(`/meetings/${meetingId.value}/transcription`)
+      transcription.value = job
+      if (!job || job.status === 'completed' || job.status === 'failed') {
+        stopPolling()
+        if (job?.status === 'completed') {
+          await refresh()
+          toast.success(`Transcript ready · ${plural(job.segment_count, 'segment')}`)
+        }
+        if (job?.status === 'failed') {
+          toast.error(job.error || 'Transcription failed.')
+        }
+      }
+    } catch {
+      stopPolling()
+    }
+  }, 3000)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+function startJob(job: TranscriptionJob) {
+  transcription.value = job
+  inputOpen.value = false
+  resetInputForm()
+  toast.success('Transcription started. This can take several minutes.')
+  startPolling()
+}
+
+function resetInputForm() {
+  inputError.value = ''
+  recordingFile.value = null
+  linkUrl.value = ''
+  transcriptFile.value = null
+  transcriptText.value = ''
+}
+
+function onRecordingFile(event: Event) {
+  recordingFile.value = (event.target as HTMLInputElement).files?.[0] ?? null
+}
+
+function onTranscriptFile(event: Event) {
+  transcriptFile.value = (event.target as HTMLInputElement).files?.[0] ?? null
+}
+
+async function submitRecording() {
+  if (!recordingFile.value) {
+    inputError.value = 'Choose an audio or video recording first.'
+    return
+  }
+  submitting.value = true
+  inputError.value = ''
+  try {
+    const form = new FormData()
+    form.append('file', recordingFile.value)
+    form.append('language', recordingLanguage.value)
+    const job = await api<TranscriptionJob>(`/meetings/${meetingId.value}/recording`, {
+      method: 'POST',
+      body: form,
+    })
+    startJob(job)
+  } catch (err: any) {
+    inputError.value = err?.data?.detail ?? 'Could not start the transcription.'
+  } finally {
+    submitting.value = false
+  }
+}
+
+function isLiveMeetingPage(value: string) {
+  try {
+    const host = new URL(value).hostname.toLowerCase().replace(/\.$/, '')
+    return ['meet.google.com', 'zoom.us', 'teams.microsoft.com', 'teams.live.com']
+      .some(candidate => host === candidate || host.endsWith(`.${candidate}`))
+  } catch {
+    return false
+  }
+}
+
+async function submitLink() {
+  const value = linkUrl.value.trim()
+  if (!value) {
+    inputError.value = 'Paste a direct recording or transcript link.'
+    return
+  }
+  if (isLiveMeetingPage(value)) {
+    inputError.value = 'This is a live meeting link. The app cannot join a meeting. Download the recording or transcript first, then upload the file.'
+    return
+  }
+  submitting.value = true
+  inputError.value = ''
+  try {
+    const job = await api<TranscriptionJob>(`/meetings/${meetingId.value}/from-link`, {
+      method: 'POST',
+      body: { url: linkUrl.value.trim(), language: linkLanguage.value },
+    })
+    startJob(job)
+  } catch (err: any) {
+    inputError.value = err?.data?.detail ?? 'Could not read that link.'
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function submitTranscript() {
+  if (!transcriptFile.value && !transcriptText.value.trim()) {
+    inputError.value = 'Choose a transcript file or paste the text.'
+    return
+  }
+  submitting.value = true
+  inputError.value = ''
+  try {
+    const form = new FormData()
+    if (transcriptFile.value) form.append('file', transcriptFile.value)
+    else form.append('text', transcriptText.value)
+    const result = await api<{ imported: number, replaced: number }>(
+      `/meetings/${meetingId.value}/transcripts/import`,
+      { method: 'POST', body: form },
+    )
+    await refresh()
+    transcription.value = null
+    inputOpen.value = false
+    resetInputForm()
+    toast.success(`Imported ${plural(result.imported, 'segment')}.`)
+  } catch (err: any) {
+    inputError.value = err?.data?.detail ?? 'Could not import the transcript.'
+  } finally {
+    submitting.value = false
+  }
+}
 
 function editTranscript(segment: TranscriptSegment) {
   editingTranscriptId.value = segment.id
+  transcriptDraftSpeaker.value = segment.speaker_label
   transcriptDraftOriginal.value = segment.original_text
-  transcriptDraftTranslated.value = segment.translated_text ?? ''
 }
 
 function cancelTranscriptEdit() {
   editingTranscriptId.value = ''
+  transcriptDraftSpeaker.value = ''
   transcriptDraftOriginal.value = ''
-  transcriptDraftTranslated.value = ''
 }
 
 async function saveTranscript(segmentId: string) {
@@ -118,8 +327,8 @@ async function saveTranscript(segmentId: string) {
     await api(`/meetings/${meetingId.value}/transcripts/${segmentId}`, {
       method: 'PUT',
       body: {
+        speaker_label: transcriptDraftSpeaker.value.trim() || 'Speaker',
         original_text: transcriptDraftOriginal.value.trim(),
-        translated_text: transcriptDraftTranslated.value.trim(),
       },
     })
     await refresh()
@@ -243,35 +452,31 @@ async function publish() {
   }
   publishing.value = true
   try {
-    const summary = await api<MeetingSummary>(`/meetings/${meetingId.value}/approve-mom`, {
+    await api(`/meetings/${meetingId.value}/approve-mom`, {
       method: 'POST',
-      body: {
-        ...payload(),
-        export_to_google_docs: false,
-        export_to_google_sheets: false,
-      },
+      body: payload(),
     })
-    hydrate(summary)
-    approveOpen.value = false
-
-    try {
-      await api(`/workspace/meetings/${meetingId.value}/export-docs`, { method: 'POST' })
-    } catch (err: any) {
-      toast.error(err?.data?.detail ?? 'Minutes verified, but the DOCX export failed.')
-    }
-    try {
-      await api(`/workspace/meetings/${meetingId.value}/export-sheets`, { method: 'POST' })
-    } catch (err: any) {
-      toast.error(err?.data?.detail ?? 'Minutes verified, but the CSV export failed.')
-    }
     await refresh()
-    toast.success('Minutes verified and published.')
+    approveOpen.value = false
+    toast.success('Minutes published, archived in Documents, and follow-ups updated.')
   } catch (err: any) {
     toast.error(err?.data?.detail ?? 'Could not publish the minutes.')
   } finally {
     publishing.value = false
   }
 }
+
+function formatTimestamp(value: number) {
+  const minutes = Math.floor(value / 60)
+  const seconds = Math.floor(value % 60)
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
+onMounted(() => {
+  if (isProcessing.value) startPolling()
+})
+
+onUnmounted(stopPolling)
 </script>
 
 <template>
@@ -289,30 +494,77 @@ async function publish() {
 
     <template v-else-if="meeting">
       <PageHeader
-        title="Minutes review"
-        :description="`${meeting.title} · ${formatDate(meeting.scheduled_start)} · ${formatTimeRange(meeting.scheduled_start, meeting.scheduled_end)}`"
+        :title="meeting.title"
+        :description="`${formatDate(meeting.scheduled_start)} · ${formatTimeRange(meeting.scheduled_start, meeting.scheduled_end)}`"
       >
         <template #meta>
-          <StatusBadge :status="isVerified ? 'Verified' : 'Draft'" />
+          <StatusBadge :status="meetingState" />
           <span class="text-[13px] text-muted-foreground">{{ itemSummary }}</span>
         </template>
         <template #actions>
+          <Button v-if="!isVerified" variant="outline" :disabled="isProcessing" @click="inputOpen = true">
+            <Upload class="h-4 w-4" />
+            Add content
+          </Button>
           <Button v-if="!isVerified" variant="outline" :disabled="saving || !hasDraft" @click="saveDraft">
             {{ saving ? 'Saving…' : 'Save draft' }}
           </Button>
           <Button v-if="!isVerified" :disabled="publishing || !hasDraft" @click="approveOpen = true">
-            {{ publishing ? 'Publishing…' : 'Approve & publish' }}
+            {{ publishing ? 'Publishing…' : 'Publish minutes' }}
           </Button>
         </template>
       </PageHeader>
+
+      <div class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-y py-2.5 text-[13px] text-muted-foreground">
+        <span class="font-medium text-foreground">Agenda</span>
+        <span v-for="item in meeting.agendas" :key="item.id">{{ item.title }}</span>
+        <span v-if="!meeting.agendas.length">No agenda recorded</span>
+      </div>
+
+      <div class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2">
+        <div v-for="(step, index) in steps" :key="step.label" class="flex items-center gap-2">
+          <span
+            class="flex h-5 w-5 items-center justify-center rounded-full border text-[11px] font-medium"
+            :class="
+              step.state === 'done'
+                ? 'border-brand bg-brand text-brand-foreground'
+                : step.state === 'current'
+                  ? 'border-brand text-brand'
+                  : 'border-border text-muted-foreground'
+            "
+          >
+            <Check v-if="step.state === 'done'" class="h-3 w-3" />
+            <span v-else>{{ index + 1 }}</span>
+          </span>
+          <span class="text-[13px]" :class="step.state === 'todo' ? 'text-muted-foreground' : 'text-foreground'">
+            {{ step.label }}
+          </span>
+          <span v-if="index < steps.length - 1" class="hidden h-px w-8 bg-border sm:block" />
+        </div>
+      </div>
+
+      <div v-if="isProcessing" class="mt-4 flex items-start gap-3 rounded-md border border-warning/20 bg-warning-soft px-4 py-3">
+        <span class="mt-0.5 h-3.5 w-3.5 animate-spin rounded-full border-2 border-warning border-t-transparent" />
+        <div>
+          <p class="text-sm font-medium text-warning">Transcribing recording</p>
+          <p class="mt-0.5 text-[13px] text-warning/90">
+            This can take several minutes for a long meeting. You can leave this page and come back.
+          </p>
+        </div>
+      </div>
+
+      <div v-else-if="transcription?.status === 'failed'" class="mt-4 rounded-md border border-negative/20 bg-negative-soft px-4 py-3 text-[13px] text-negative">
+        {{ transcription.error || 'Transcription failed.' }}
+        <button class="ml-1 font-medium underline" @click="inputOpen = true">Try again</button>
+      </div>
 
       <div v-if="isVerified" class="mt-4 flex flex-col gap-3 rounded-lg border border-positive/20 bg-positive-soft px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div class="flex items-start gap-2.5">
           <Check class="mt-0.5 h-4 w-4 text-positive" />
           <div>
-            <p class="text-sm font-medium text-positive">Minutes verified</p>
+            <p class="text-sm font-medium text-positive">Minutes published</p>
             <p class="mt-0.5 text-[13px] text-positive">
-              This record is read-only. Download the DOCX or the action-item CSV.
+              Archived in Documents. This record is read-only.
             </p>
           </div>
         </div>
@@ -325,18 +577,24 @@ async function publish() {
             <Download class="h-3.5 w-3.5" />
             CSV
           </Button>
+          <Button variant="outline" size="sm" as-child>
+            <NuxtLink to="/tasks">Open tasks</NuxtLink>
+          </Button>
         </div>
       </div>
 
       <div class="mt-4 grid grid-cols-1 items-start gap-4 xl:grid-cols-12">
-        <Card class="flex flex-col xl:col-span-5 xl:h-[calc(100vh-10rem)]">
+        <Card class="flex flex-col xl:col-span-5 xl:h-[calc(100vh-13rem)]">
           <CardHeader class="flex-row items-start justify-between gap-3 pb-3">
             <div>
-              <CardTitle>Source transcript</CardTitle>
-              <CardDescription class="mt-1">Correct any misheard Khmer words before generating the draft.</CardDescription>
+              <CardTitle>Transcript</CardTitle>
+              <CardDescription class="mt-1">
+                {{ sourceTranscripts.length ? 'Correct names and misheard words before drafting.' : 'Upload a recording, paste a link, or import a transcript.' }}
+              </CardDescription>
             </div>
             <Badge variant="outline">{{ plural(sourceTranscripts.length, 'segment') }}</Badge>
           </CardHeader>
+
           <div v-if="sourceTranscripts.length" class="max-h-[480px] flex-1 overflow-y-auto border-t p-5 xl:max-h-none">
             <div
               v-for="segment in sourceTranscripts"
@@ -346,8 +604,8 @@ async function publish() {
               <div class="flex items-center justify-between gap-3">
                 <p class="text-[13px] font-medium">{{ segment.speaker_label }}</p>
                 <div class="flex items-center gap-1.5">
-                  <p class="tabular-nums text-[13px] text-muted-foreground">
-                    {{ Math.floor(segment.start_timestamp / 60).toString().padStart(2, '0') }}:{{ Math.floor(segment.start_timestamp % 60).toString().padStart(2, '0') }}
+                  <p v-if="segment.start_timestamp > 0" class="tabular-nums text-[13px] text-muted-foreground">
+                    {{ formatTimestamp(segment.start_timestamp) }}
                   </p>
                   <Button
                     v-if="!isVerified && editingTranscriptId !== segment.id"
@@ -360,17 +618,12 @@ async function publish() {
                 </div>
               </div>
               <div v-if="editingTranscriptId === segment.id" class="mt-2 space-y-2">
+                <Input v-model="transcriptDraftSpeaker" aria-label="Speaker" placeholder="Speaker" />
                 <Textarea
                   v-model="transcriptDraftOriginal"
                   data-testid="transcript-original"
                   rows="4"
                   class="font-khmer"
-                />
-                <Textarea
-                  v-model="transcriptDraftTranslated"
-                  data-testid="transcript-translation"
-                  rows="3"
-                  placeholder="English translation"
                 />
                 <div class="flex gap-2">
                   <Button size="sm" :disabled="savingTranscript" @click="saveTranscript(segment.id)">
@@ -381,45 +634,49 @@ async function publish() {
                   </Button>
                 </div>
               </div>
-              <div v-else>
-                <p class="mt-1.5 font-khmer text-sm leading-relaxed">{{ segment.original_text }}</p>
-                <p v-if="segment.translated_text" class="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
-                  {{ segment.translated_text }}
-                </p>
-              </div>
+              <p v-else class="mt-1.5 font-khmer text-sm leading-relaxed">{{ segment.original_text }}</p>
             </div>
           </div>
-          <div v-else class="flex flex-1 items-center border-t px-5 py-8">
-            <p class="text-[13px] text-muted-foreground">
-              No transcript segments have been recorded for this meeting.
+
+          <div v-else class="flex flex-1 flex-col items-start justify-center border-t px-5 py-10">
+            <FileAudio class="h-5 w-5 text-muted-foreground" />
+            <p class="mt-3 text-sm font-medium">No transcript yet</p>
+            <p class="mt-1 max-w-sm text-[13px] leading-relaxed text-muted-foreground">
+              Upload a Khmer recording for local transcription, or import a transcript file.
             </p>
+            <Button v-if="!isVerified" class="mt-4" size="sm" :disabled="isProcessing" @click="inputOpen = true">
+              <Upload class="h-4 w-4" />
+              Add meeting content
+            </Button>
           </div>
         </Card>
 
-        <Card class="flex flex-col xl:col-span-7 xl:h-[calc(100vh-10rem)]">
+        <Card class="flex flex-col xl:col-span-7 xl:h-[calc(100vh-13rem)]">
           <CardHeader class="pb-3">
             <CardTitle>Minutes of meeting</CardTitle>
             <CardDescription>
-              {{ isVerified ? 'These minutes are verified and read-only.' : 'Edit the generated record. The approved version becomes the official minutes.' }}
+              {{ isVerified ? 'These minutes are published and read-only.' : 'Generate a draft or write the minutes directly. Only the published version becomes official.' }}
             </CardDescription>
           </CardHeader>
 
           <CardContent class="flex-1 space-y-6 overflow-y-auto border-t pt-5">
             <div v-if="!hasDraft" class="rounded-md border border-dashed border-input bg-muted/30 p-4">
-              <p class="text-[13px] font-medium">No draft yet</p>
+              <p class="text-[13px] font-medium">No minutes yet</p>
               <p class="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-                Generate a draft from {{ sourceTranscripts.length }} transcript segment{{ sourceTranscripts.length === 1 ? '' : 's' }}, then review and edit every section.
+                {{ sourceTranscripts.length
+                  ? `Generate a draft from ${plural(sourceTranscripts.length, 'transcript segment')}, then review every section.`
+                  : 'Add meeting content first, or write the minutes manually below.' }}
               </p>
               <p v-if="aiError" class="mt-2 text-[13px] text-negative">{{ aiError }}</p>
               <Button variant="outline" size="sm" class="mt-3" :disabled="generating || !canGenerate" @click="generateDraft">
-                {{ generating ? 'Generating…' : 'Generate draft' }}
+                {{ generating ? 'Generating…' : 'Generate draft from transcript' }}
               </Button>
             </div>
 
             <section class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <Label for="mom-summary">Executive summary</Label>
-                <span class="text-[13px] text-muted-foreground">{{ isVerified ? 'Verified' : 'Editable' }}</span>
+                <span class="text-[13px] text-muted-foreground">{{ isVerified ? 'Published' : 'Editable' }}</span>
               </div>
               <Textarea id="mom-summary" v-model="mom.executiveSummary" rows="5" :readonly="isVerified" />
             </section>
@@ -539,7 +796,7 @@ async function publish() {
             </section>
 
             <div class="flex flex-col gap-1 border-t pt-4 text-[13px] text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-              <span>{{ isVerified ? 'Verified record' : draftSaved ? 'Draft saved' : 'Draft · not yet verified' }}</span>
+              <span>{{ isVerified ? 'Published record' : draftSaved ? 'Draft saved' : 'Draft · not published' }}</span>
               <span>{{ itemSummary }}</span>
             </div>
           </CardContent>
@@ -551,7 +808,7 @@ async function publish() {
           <DialogHeader>
             <DialogTitle>Publish these minutes?</DialogTitle>
             <DialogDescription>
-              This marks the record verified. The export creates a local DOCX and CSV from the stored minutes.
+              This marks the minutes verified, creates the DOCX and CSV, archives a copy in Documents, and activates the action items and decisions.
             </DialogDescription>
           </DialogHeader>
           <div class="rounded-md border bg-muted/40 p-3 text-[13px] text-muted-foreground">
@@ -563,6 +820,154 @@ async function publish() {
             <Button :disabled="publishing" @click="publish">
               <span v-if="publishing" class="h-3 w-3 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
               {{ publishing ? 'Publishing…' : 'Confirm & publish' }}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog v-model:open="inputOpen">
+        <DialogContent class="max-w-xl" data-testid="meeting-content">
+          <DialogHeader>
+            <DialogTitle>Add meeting content</DialogTitle>
+            <DialogDescription>
+              Choose one source. Importing replaces the current transcript.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div class="flex items-center gap-1 border-b" role="tablist">
+            <button
+              v-for="option in [
+                { value: 'recording', label: 'Recording', icon: FileAudio },
+                { value: 'link', label: 'From link', icon: Link2 },
+                { value: 'transcript', label: 'Transcript', icon: FileText },
+              ]"
+              :key="option.value"
+              role="tab"
+              :aria-selected="inputTab === option.value"
+              class="relative inline-flex h-9 flex-1 items-center justify-center gap-1.5 px-3 text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+              :class="
+                inputTab === option.value
+                  ? 'text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-brand after:content-[\'\']'
+                  : ''
+              "
+              @click="inputTab = option.value"
+            >
+              <component :is="option.icon" class="h-3.5 w-3.5" />
+              {{ option.label }}
+            </button>
+          </div>
+
+            <div v-if="inputTab === 'recording'" class="mt-4 space-y-4">
+              <div class="space-y-1.5">
+                <Label for="recording-file">Audio or video recording</Label>
+                <input
+                  id="recording-file"
+                  type="file"
+                  accept="audio/*,video/*,.mp3,.m4a,.wav,.mp4,.webm,.ogg,.aac,.flac,.mov"
+                  class="sr-only"
+                  @change="onRecordingFile"
+                />
+                <label
+                  for="recording-file"
+                  class="flex min-h-[88px] cursor-pointer flex-col items-center justify-center gap-1 rounded-md border border-dashed border-input bg-muted/30 px-4 py-4 text-center transition-colors hover:bg-muted/60"
+                >
+                  <Upload class="h-4 w-4 text-muted-foreground" />
+                  <span class="text-[13px] font-medium">
+                    {{ recordingFile?.name ?? 'Choose a recording' }}
+                  </span>
+                  <span class="text-[12px] text-muted-foreground">MP3, M4A, WAV, MP4 or WebM · up to 500 MB</span>
+                </label>
+                <p class="text-[12px] text-muted-foreground">
+                  Transcription may take several minutes. English runs locally; Khmer uses Google when a key is configured.
+                </p>
+              </div>
+              <div class="space-y-1.5">
+                <Label for="recording-language">Spoken language</Label>
+                <select
+                  id="recording-language"
+                  v-model="recordingLanguage"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="km">Khmer</option>
+                  <option value="en">English</option>
+                  <option value="auto">Auto detect</option>
+                </select>
+              </div>
+            </div>
+
+            <div v-if="inputTab === 'link'" class="mt-4 space-y-4">
+              <div class="space-y-1.5">
+                <Label for="recording-link">Direct file link</Label>
+                <Input id="recording-link" v-model="linkUrl" placeholder="https://example.com/meeting.mp4" />
+                <p class="text-[12px] text-muted-foreground">
+                  A direct link to a recording or transcript file, for example a public MP4, M4A, MP3, WAV, VTT, SRT, TXT or DOCX.
+                </p>
+                <div class="rounded-md border border-warning/20 bg-warning-soft px-3 py-2 text-[12px] leading-relaxed text-warning">
+                  <p class="font-medium">Not a meeting link.</p>
+                  <p class="mt-0.5">
+                    Links such as meet.google.com, zoom.us/rec, Teams share pages or Google Drive share pages cannot be read directly. Open the platform, download the recording or transcript, then upload the file.
+                  </p>
+                </div>
+              </div>
+              <div class="space-y-1.5">
+                <Label for="link-language">Spoken language</Label>
+                <select
+                  id="link-language"
+                  v-model="linkLanguage"
+                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="km">Khmer</option>
+                  <option value="en">English</option>
+                  <option value="auto">Auto detect</option>
+                </select>
+              </div>
+            </div>
+
+            <div v-if="inputTab === 'transcript'" class="mt-4 space-y-4">
+              <div class="space-y-1.5">
+                <Label for="transcript-file">Transcript file</Label>
+                <input
+                  id="transcript-file"
+                  type="file"
+                  accept=".txt,.vtt,.srt,.docx"
+                  class="sr-only"
+                  @change="onTranscriptFile"
+                />
+                <label
+                  for="transcript-file"
+                  class="flex min-h-[88px] cursor-pointer flex-col items-center justify-center gap-1 rounded-md border border-dashed border-input bg-muted/30 px-4 py-4 text-center transition-colors hover:bg-muted/60"
+                >
+                  <FileText class="h-4 w-4 text-muted-foreground" />
+                  <span class="text-[13px] font-medium">
+                    {{ transcriptFile?.name ?? 'Choose a transcript file' }}
+                  </span>
+                  <span class="text-[12px] text-muted-foreground">TXT, VTT, SRT or DOCX</span>
+                </label>
+              </div>
+              <div class="space-y-1.5">
+                <Label for="transcript-text">Or paste the transcript</Label>
+                <Textarea
+                  id="transcript-text"
+                  v-model="transcriptText"
+                  rows="6"
+                  class="font-khmer"
+                  placeholder="Speaker: text…"
+                />
+              </div>
+            </div>
+
+          <p v-if="inputError" class="text-[13px] text-negative">{{ inputError }}</p>
+
+          <DialogFooter>
+            <Button variant="outline" :disabled="submitting" @click="inputOpen = false">Cancel</Button>
+            <Button v-if="inputTab === 'recording'" :disabled="submitting" @click="submitRecording">
+              {{ submitting ? 'Uploading…' : 'Transcribe recording' }}
+            </Button>
+            <Button v-else-if="inputTab === 'link'" :disabled="submitting" @click="submitLink">
+              {{ submitting ? 'Reading…' : 'Read link' }}
+            </Button>
+            <Button v-else :disabled="submitting" @click="submitTranscript">
+              {{ submitting ? 'Importing…' : 'Import transcript' }}
             </Button>
           </DialogFooter>
         </DialogContent>

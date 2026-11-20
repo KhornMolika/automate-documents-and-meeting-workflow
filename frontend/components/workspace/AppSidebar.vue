@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { BookOpen, ExternalLink, FileText, LayoutDashboard, LogOut, Video } from 'lucide-vue-next'
+import { BookOpen, CheckSquare, ExternalLink, FileText, LayoutDashboard, LogOut, Video } from 'lucide-vue-next'
 import { Avatar, AvatarFallback } from '~/components/ui/avatar'
 import { Button } from '~/components/ui/button'
 import { useAuth } from '~/composables/useAuth'
@@ -23,8 +23,9 @@ const avatarLabel = computed(() => initials(user.value?.full_name))
 
 const navItems = [
   { label: 'Overview', to: '/', icon: LayoutDashboard },
-  { label: 'Documents', to: '/documents', icon: FileText },
   { label: 'Meetings', to: '/meetings', icon: Video },
+  { label: 'Documents', to: '/documents', icon: FileText },
+  { label: 'Tasks', to: '/tasks', icon: CheckSquare },
 ]
 
 function isActive(to: string) {

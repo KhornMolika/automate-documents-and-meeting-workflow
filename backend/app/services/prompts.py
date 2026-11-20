@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from typing import Any, Dict, List
 
 
@@ -23,7 +24,9 @@ def build_mom_prompt(
     meeting_title: str,
     agendas: List[str],
     transcripts: List[Dict[str, Any]],
+    current_date: str | None = None,
 ) -> str:
+    current_date = current_date or datetime.utcnow().strftime("%Y-%m-%d")
     dialogue_lines = []
     for item in transcripts:
         speaker = item.get("speaker_label", "Speaker")
@@ -39,6 +42,7 @@ You are the AI Meeting Intelligence Assistant for ACLEDA University of Business 
 Synthesize the following meeting dialogue into structured Minutes of Meeting (MoM).
 
 Meeting Title: {meeting_title}
+Current date: {current_date}
 Scheduled Agendas: {json.dumps(agendas)}
 
 Dialogue Transcripts:
@@ -51,7 +55,7 @@ Instructions:
 4. Extract all actionable tasks. For each task, extract:
    - "task_description": Clear, specific task description.
    - "assignee_name": Name of responsible person if explicitly mentioned (otherwise null).
-   - "deadline": Target date formatted as YYYY-MM-DD if mentioned (otherwise null).
+   - "deadline": Target date formatted as YYYY-MM-DD if mentioned (otherwise null). If no year is spoken, use the current year unless the context clearly indicates another year.
    - "confidence_score": Between 0.0 and 1.0.
 
 Respond strictly in JSON matching the schema:

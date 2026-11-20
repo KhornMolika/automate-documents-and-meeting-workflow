@@ -1,0 +1,93 @@
+import { expect, test } from '@playwright/test'
+import { authenticate, createMeeting, seedDocument, seedTranscriptMeeting, uniqueTitle } from './api'
+
+const live = process.env.E2E_LIVE === '1'
+const demoDir = process.env.DEMO_DIR || '/Users/alexkgm/Desktop/demo'
+
+test.describe('Live services', () => {
+  test.skip(!live, 'Set E2E_LIVE=1 to run tests that call the speech service and Gemini.')
+
+  test('transcribes a Khmer recording with Google', async ({ page, request }) => {
+    test.setTimeout(240_000)
+    const token = await authenticate(page, request)
+    const title = uniqueTitle('E2E Khmer Recording')
+    const meeting = await createMeeting(
+      request,
+      token,
+      title,
+      new Date(Date.now() + 60_000),
+      new Date(Date.now() + 30 * 60_000),
+    )
+
+    await page.goto(`/meetings/${meeting.id}/review`)
+    await page.waitForLoadState('networkidle')
+    await page.getByRole('button', { name: 'Add content' }).first().click()
+    const dialog = page.getByTestId('meeting-content')
+    await dialog.getByRole('tab', { name: 'Recording' }).click()
+    await dialog.locator('#recording-file').setInputFiles(`${demoDir}/sample-meeting-km.mp3`)
+    await dialog.locator('#recording-language').selectOption('km')
+    await dialog.getByRole('button', { name: 'Transcribe recording' }).click()
+
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByText('សួស្តី', { exact: false }).first()).toBeVisible({ timeout: 180_000 })
+    await expect(page.getByText('0 segments')).toHaveCount(0)
+  })
+
+  test('transcribes an English recording locally', async ({ page, request }) => {
+    test.setTimeout(180_000)
+    const token = await authenticate(page, request)
+    const title = uniqueTitle('E2E English Recording')
+    const meeting = await createMeeting(
+      request,
+      token,
+      title,
+      new Date(Date.now() + 60_000),
+      new Date(Date.now() + 30 * 60_000),
+    )
+
+    await page.goto(`/meetings/${meeting.id}/review`)
+    await page.waitForLoadState('networkidle')
+    await page.getByRole('button', { name: 'Add content' }).first().click()
+    const dialog = page.getByTestId('meeting-content')
+    await dialog.getByRole('tab', { name: 'Recording' }).click()
+    await dialog.locator('#recording-file').setInputFiles(`${demoDir}/sample-meeting-en.mp3`)
+    await dialog.locator('#recording-language').selectOption('en')
+    await dialog.getByRole('button', { name: 'Transcribe recording' }).click()
+
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByText('Good morning everyone', { exact: false })).toBeVisible({ timeout: 150_000 })
+  })
+
+  test('generates a document summary with Gemini', async ({ page, request }) => {
+    test.setTimeout(240_000)
+    const token = await authenticate(page, request)
+    const title = uniqueTitle('E2E Gemini Document')
+    await seedDocument(request, token, title)
+
+    await page.goto('/documents')
+    await page.waitForLoadState('networkidle')
+    await page.getByLabel('Search documents').fill(title)
+    const row = page.getByTestId('document-table').locator('tbody tr').first()
+    await row.getByRole('button', { name: 'Open' }).click()
+    const dialog = page.getByTestId('document-detail')
+    await dialog.getByRole('button', { name: 'Generate summary' }).click()
+
+    await expect(dialog.getByTestId('document-summary')).toBeVisible({ timeout: 200_000 })
+    await expect(dialog.getByTestId('document-summary')).not.toHaveText('')
+  })
+
+  test('generates an AI minutes draft with Gemini', async ({ page, request }) => {
+    test.setTimeout(300_000)
+    const token = await authenticate(page, request)
+    const title = uniqueTitle('E2E Gemini Draft')
+    const meeting = await seedTranscriptMeeting(request, token, title)
+
+    await page.goto(`/meetings/${meeting.id}/review`)
+    await page.waitForLoadState('networkidle')
+    await page.getByRole('button', { name: 'Generate draft from transcript' }).click()
+
+    await expect(page.locator('#mom-summary')).not.toHaveValue('', { timeout: 240_000 })
+    await expect(page.getByRole('textbox', { name: /^Action item/ }).first()).toBeVisible()
+    await expect(page.getByText('Ollama is not reachable')).toHaveCount(0)
+  })
+})

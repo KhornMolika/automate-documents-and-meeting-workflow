@@ -34,7 +34,7 @@ test.describe('Mobile layout', () => {
   test('core screens fit the phone width', async ({ page, request }) => {
     const token = await authenticate(page, request)
     await seedDocument(request, token, uniqueTitle('E2E Mobile Document'))
-    for (const path of ['/', '/documents', '/meetings']) {
+    for (const path of ['/', '/documents', '/meetings', '/tasks']) {
       await page.goto(path)
       await page.waitForLoadState('networkidle')
       await expectNoHorizontalOverflow(page)

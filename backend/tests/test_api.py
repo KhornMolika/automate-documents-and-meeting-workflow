@@ -111,19 +111,24 @@ async def test_document_and_meeting_lifecycle(client: AsyncClient, db_session: A
     assert meeting_res.status_code == 200
     meeting_id = meeting_res.json()["id"]
 
-    segment_payload = {
-        "speaker_label": "Dean Lay Thou",
-        "start_timestamp": 12.5,
-        "end_timestamp": 18.0,
-        "original_text": "យើងត្រូវ review proposal ទាំងអស់ មុនថ្ងៃ Friday.",
-        "translated_text": "We need to review all proposals before Friday.",
-        "confidence_score": 0.97,
-        "language_detected": "km-en",
-    }
-    trans_res = await client.post(
-        f"/api/v1/meetings/{meeting_id}/transcripts", json=segment_payload, headers=headers
+    transcript_text = (
+        "Dean Lay Thou: យើងត្រូវ review proposal ទាំងអស់ មុនថ្ងៃ Friday.\n"
+        "Khorn Molika: I will submit the ethics approval by 25 November 2026."
     )
-    assert trans_res.status_code == 200
+    import_res = await client.post(
+        f"/api/v1/meetings/{meeting_id}/transcripts/import",
+        data={"text": transcript_text},
+        headers=headers,
+    )
+    assert import_res.status_code == 200
+    assert import_res.json()["imported"] == 2
+
+    transcripts_res = await client.get(
+        f"/api/v1/meetings/{meeting_id}/transcripts", headers=headers
+    )
+    assert transcripts_res.status_code == 200
+    assert len(transcripts_res.json()) == 2
+    assert transcripts_res.json()[0]["speaker_label"] == "Dean Lay Thou"
 
     # No LLM provider is configured for tests: the endpoint must fail honestly.
     synth_res = await client.post(f"/api/v1/meetings/{meeting_id}/synthesize-mom", headers=headers)
@@ -154,13 +159,8 @@ async def test_document_and_meeting_lifecycle(client: AsyncClient, db_session: A
     assert draft_res.status_code == 200
     assert draft_res.json()["is_verified"] is False
 
-    approve_payload = {
-        **draft_payload,
-        "export_to_google_docs": False,
-        "export_to_google_sheets": False,
-    }
     approve_res = await client.post(
-        f"/api/v1/meetings/{meeting_id}/approve-mom", json=approve_payload, headers=headers
+        f"/api/v1/meetings/{meeting_id}/approve-mom", json=draft_payload, headers=headers
     )
     assert approve_res.status_code == 200
     summary_data = approve_res.json()
@@ -168,33 +168,79 @@ async def test_document_and_meeting_lifecycle(client: AsyncClient, db_session: A
     assert len(summary_data["decisions"]) == 1
     assert len(summary_data["action_items"]) == 1
 
-    docs_res = await client.post(
-        f"/api/v1/workspace/meetings/{meeting_id}/export-docs", headers=headers
-    )
-    assert docs_res.status_code == 200
-    assert docs_res.json()["service"] == "local-docx"
-    assert docs_res.json()["doc_url"].endswith("/minutes.docx")
+    # The verified minutes are archived in the document repository.
+    search_res = await client.get("/api/v1/documents/search?q=Minutes", headers=headers)
+    assert search_res.status_code == 200
+    archived = search_res.json()["items"]
+    assert any(document["drive_file_id"] == meeting_id for document in archived)
+    assert any(document["category"]["code"] == "MOM" for document in archived)
 
-    sheets_res = await client.post(
-        f"/api/v1/workspace/meetings/{meeting_id}/export-sheets", headers=headers
+    # Re-publishing must not duplicate the archived document.
+    again = await client.post(
+        f"/api/v1/meetings/{meeting_id}/approve-mom", json=draft_payload, headers=headers
     )
-    assert sheets_res.status_code == 200
-    assert sheets_res.json()["rows_appended"] == 1
+    assert again.status_code == 200
+    search_res = await client.get("/api/v1/documents/search?q=Minutes", headers=headers)
+    matches = [
+        document
+        for document in search_res.json()["items"]
+        if document["drive_file_id"] == meeting_id
+    ]
+    assert len(matches) == 1
 
-    # Start/end lifecycle and dashboard aggregation.
-    start_res = await client.post(f"/api/v1/meetings/{meeting_id}/start", headers=headers)
-    assert start_res.status_code == 200
-    assert start_res.json()["status"] == "In Progress"
+    # Downloads are generated from the stored minutes.
+    docx_res = await client.get(
+        f"/api/v1/workspace/meetings/{meeting_id}/minutes.docx", headers=headers
+    )
+    assert docx_res.status_code == 200
+    import io
+
+    import docx
+
+    generated = docx.Document(io.BytesIO(docx_res.content))
+    generated_text = "\n".join(paragraph.text for paragraph in generated.paragraphs)
+    assert "Attendees" in generated_text
+    assert "Opening & Agenda Approval" in generated_text
+    assert "Faculty of Science & Technology" in generated_text
+
+    csv_res = await client.get(
+        f"/api/v1/workspace/meetings/{meeting_id}/action-items.csv", headers=headers
+    )
+    assert csv_res.status_code == 200
+    assert "Submit the research ethics approval." in csv_res.text
+
+    # Tasks are visible only after verification and can be completed.
+    tasks_res = await client.get("/api/v1/tasks/action-items", headers=headers)
+    assert tasks_res.status_code == 200
+    items = [item for item in tasks_res.json() if item["meeting_id"] == meeting_id]
+    assert len(items) == 1
+    assert items[0]["is_overdue"] is False
+    task_id = items[0]["id"]
+
+    patch_res = await client.patch(
+        f"/api/v1/tasks/action-items/{task_id}",
+        json={"status": "Completed"},
+        headers=headers,
+    )
+    assert patch_res.status_code == 200
+    assert patch_res.json()["status"] == "Completed"
+
+    bad_patch = await client.patch(
+        f"/api/v1/tasks/action-items/{task_id}",
+        json={"status": "Banana"},
+        headers=headers,
+    )
+    assert bad_patch.status_code == 400
+
+    decisions_res = await client.get("/api/v1/tasks/decisions", headers=headers)
+    assert decisions_res.status_code == 200
+    assert any(item["meeting_id"] == meeting_id for item in decisions_res.json())
 
     dashboard_res = await client.get("/api/v1/dashboard", headers=headers)
     assert dashboard_res.status_code == 200
     dashboard = dashboard_res.json()
     assert dashboard["documents_count"] >= 1
     assert dashboard["meetings_count"] >= 1
-    assert dashboard["live_meeting"]["id"] == meeting_id
-    assert any(item["meeting_id"] == meeting_id for item in dashboard["action_items"])
-    assert any(item["meeting_id"] == meeting_id for item in dashboard["recent_decisions"])
-
-    end_res = await client.post(f"/api/v1/meetings/{meeting_id}/end", headers=headers)
-    assert end_res.status_code == 200
-    assert end_res.json()["status"] == "Completed"
+    assert dashboard["open_action_items_count"] == 0
+    assert dashboard["overdue_action_items_count"] == 0
+    assert "live_meeting" not in dashboard

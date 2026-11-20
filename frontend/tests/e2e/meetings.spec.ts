@@ -1,33 +1,33 @@
 import { expect, test } from '@playwright/test'
-import { authenticate, seedCompletedMeeting, seedLiveMeeting, uniqueTitle } from './api'
+import { authenticate, seedCompletedMeeting, seedDraftMeeting, uniqueTitle } from './api'
 import { expectOverlayBlur } from './helpers'
 
 test.describe('Meetings', () => {
   test('filters real meetings and opens the linked minutes', async ({ page, request }) => {
     const token = await authenticate(page, request)
-    const liveTitle = uniqueTitle('E2E Live Filter')
-    const completedTitle = uniqueTitle('E2E Completed Filter')
-    await seedLiveMeeting(request, token, liveTitle)
-    await seedCompletedMeeting(request, token, completedTitle)
+    const draftTitle = uniqueTitle('E2E Draft Filter')
+    const publishedTitle = uniqueTitle('E2E Published Filter')
+    await seedDraftMeeting(request, token, draftTitle)
+    await seedCompletedMeeting(request, token, publishedTitle)
 
     await page.goto('/meetings')
     await page.waitForLoadState('networkidle')
     const rows = page.getByTestId('meeting-row')
-    await expect(rows.filter({ hasText: liveTitle })).toHaveCount(1)
-    await expect(rows.filter({ hasText: completedTitle })).toHaveCount(1)
+    await expect(rows.filter({ hasText: draftTitle })).toHaveCount(1)
+    await expect(rows.filter({ hasText: publishedTitle })).toHaveCount(1)
 
-    await page.getByRole('tab', { name: /^Live/ }).click()
-    await expect(rows.filter({ hasText: liveTitle })).toHaveCount(1)
-    await expect(rows.filter({ hasText: completedTitle })).toHaveCount(0)
+    await page.getByRole('tab', { name: /^Draft/ }).click()
+    await expect(rows.filter({ hasText: draftTitle })).toHaveCount(1)
+    await expect(rows.filter({ hasText: publishedTitle })).toHaveCount(0)
 
-    await page.getByRole('tab', { name: /^Completed/ }).click()
-    await expect(rows.filter({ hasText: completedTitle })).toHaveCount(1)
-    await expect(rows.filter({ hasText: liveTitle })).toHaveCount(0)
+    await page.getByRole('tab', { name: /^Published/ }).click()
+    await expect(rows.filter({ hasText: publishedTitle })).toHaveCount(1)
+    await expect(rows.filter({ hasText: draftTitle })).toHaveCount(0)
 
-    const completedRow = rows.filter({ hasText: completedTitle })
-    await completedRow.getByRole('link', { name: 'View minutes' }).click()
+    const publishedRow = rows.filter({ hasText: publishedTitle })
+    await publishedRow.getByRole('link', { name: 'View minutes' }).click()
     await expect(page).toHaveURL(/\/meetings\/.+\/review$/)
-    await expect(page.getByText('Minutes verified').first()).toBeVisible()
+    await expect(page.getByText('Minutes published').first()).toBeVisible()
   })
 
   test('new meeting closes by X, Cancel and Escape, then creates a real meeting', async ({ page, request }) => {

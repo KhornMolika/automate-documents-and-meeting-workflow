@@ -17,7 +17,7 @@ test.describe('Documents', () => {
     await row.getByRole('button', { name: 'Open' }).click()
     const dialog = page.getByTestId('document-detail')
     await expect(dialog.getByRole('heading', { name: title })).toBeVisible()
-    await expect(dialog).toContainText('AI abstract')
+    await expect(dialog).toContainText('Summary')
     await expectOverlayBlur(page)
     await dialog.getByRole('button', { name: 'Close' }).click()
     await expect(dialog).toHaveCount(0)

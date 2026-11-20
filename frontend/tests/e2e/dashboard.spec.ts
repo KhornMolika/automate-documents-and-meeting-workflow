@@ -1,14 +1,12 @@
 import { expect, test } from '@playwright/test'
-import { authenticate, seedCompletedMeeting, seedDocument, seedLiveMeeting, uniqueTitle } from './api'
+import { authenticate, seedCompletedMeeting, seedDocument, uniqueTitle } from './api'
 
 test.describe('Overview', () => {
   test('shows real meetings, documents and action items from the API', async ({ page, request }) => {
     const token = await authenticate(page, request)
-    const liveTitle = uniqueTitle('E2E Live Review')
     const completedTitle = uniqueTitle('E2E Completed Review')
     const documentTitle = uniqueTitle('E2E Overview Policy')
 
-    await seedLiveMeeting(request, token, liveTitle)
     await seedCompletedMeeting(request, token, completedTitle)
     await seedDocument(request, token, documentTitle)
 
@@ -16,15 +14,10 @@ test.describe('Overview', () => {
     await page.waitForLoadState('networkidle')
 
     await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
-    await expect(page.getByText(liveTitle)).toBeVisible()
-    await expect(page.getByText('Minutes readiness')).toBeVisible()
+    await expect(page.getByText('Next meeting')).toBeVisible()
     await expect(page.getByText('Recent documents')).toBeVisible()
     await expect(page.getByText(documentTitle)).toBeVisible()
     await expect(page.getByText('Submit the E2E ethics approval.', { exact: true }).first()).toBeVisible()
-    await expect(page.getByRole('link', { name: 'Open live console' })).toHaveAttribute(
-      'href',
-      /\/meetings\/.+\/live$/,
-    )
     await expect(page.getByText('Could not load this view')).toHaveCount(0)
   })
 
@@ -39,5 +32,6 @@ test.describe('Overview', () => {
       'href',
       'http://localhost:8000/docs',
     )
+    await expect(page.getByRole('link', { name: 'Tasks', exact: true })).toBeVisible()
   })
 })

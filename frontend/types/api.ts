@@ -142,13 +142,6 @@ export interface DashboardMeeting {
   scheduled_end: string
   participants: number
   agenda: { title: string, duration_minutes: number }[]
-  transcript_count: number
-  summary: {
-    id: string
-    is_verified: boolean
-    decisions_count: number
-    action_items_count: number
-  } | null
 }
 
 export interface DashboardActionItem {
@@ -157,29 +150,56 @@ export interface DashboardActionItem {
   assignee?: string | null
   deadline?: string | null
   status: string
+  is_overdue: boolean
   meeting_id: string
   meeting_title: string
-}
-
-export interface DashboardDecision {
-  id: string
-  text: string
-  agenda_topic?: string | null
-  meeting_id: string
-  meeting_title: string
-  date: string
+  meeting_date: string
 }
 
 export interface Dashboard {
   documents_count: number
   meetings_count: number
   open_action_items_count: number
-  mom_turnaround_minutes: number | null
-  live_meeting: DashboardMeeting | null
+  overdue_action_items_count: number
   next_meeting: DashboardMeeting | null
   recent_documents: WorkspaceDocument[]
   action_items: DashboardActionItem[]
-  recent_decisions: DashboardDecision[]
+}
+
+export interface TranscriptionJob {
+  id: string
+  meeting_id: string
+  status: 'queued' | 'processing' | 'completed' | 'failed'
+  language: string
+  source_type: string
+  source_name?: string | null
+  error?: string | null
+  segment_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface TaskActionItem {
+  id: string
+  meeting_id: string
+  meeting_title: string
+  meeting_date: string
+  task_description: string
+  assignee_name?: string | null
+  deadline?: string | null
+  status: string
+  is_overdue: boolean
+  created_at: string
+}
+
+export interface TaskDecision {
+  id: string
+  meeting_id: string
+  meeting_title: string
+  meeting_date: string
+  agenda_topic?: string | null
+  decision_text: string
+  context_notes?: string | null
 }
 
 export interface MomPayload {

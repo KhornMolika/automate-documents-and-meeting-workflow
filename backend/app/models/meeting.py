@@ -27,6 +27,7 @@ class Meeting(Base):
     participants = relationship("MeetingParticipant", back_populates="meeting", cascade="all, delete-orphan")
     transcripts = relationship("MeetingTranscript", back_populates="meeting", cascade="all, delete-orphan", order_by="MeetingTranscript.start_timestamp")
     summary = relationship("MeetingSummary", back_populates="meeting", uselist=False, cascade="all, delete-orphan")
+    transcription_jobs = relationship("TranscriptionJob", back_populates="meeting", cascade="all, delete-orphan")
 
     @property
     def participant_count(self) -> int:
@@ -108,6 +109,23 @@ class Decision(Base):
     order_index: Mapped[int] = mapped_column(Integer, default=1)
 
     summary = relationship("MeetingSummary", back_populates="decisions")
+
+
+class TranscriptionJob(Base):
+    __tablename__ = "transcription_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    meeting_id: Mapped[str] = mapped_column(String(36), ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="queued")  # queued, processing, completed, failed
+    language: Mapped[str] = mapped_column(String(20), default="km")
+    source_type: Mapped[str] = mapped_column(String(20), default="upload")  # upload, url
+    source_name: Mapped[str] = mapped_column(String(500), nullable=True)
+    error: Mapped[str] = mapped_column(Text, nullable=True)
+    segment_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    meeting = relationship("Meeting", back_populates="transcription_jobs")
 
 
 class ActionItem(Base):

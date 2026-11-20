@@ -8,7 +8,6 @@ from app.core.database import engine, Base, AsyncSessionLocal
 from app.core.security import get_password_hash
 from app.models import Role, Department, User, DocumentCategory
 from app.api.v1.router import api_router
-from app.websockets.audio_stream import router as ws_router
 from sqlalchemy import select
 
 
@@ -111,7 +110,6 @@ app.add_middleware(
 
 # Routes
 app.include_router(api_router, prefix=settings.API_V1_STR)
-app.include_router(ws_router)
 
 
 @app.get("/health", tags=["Health"])

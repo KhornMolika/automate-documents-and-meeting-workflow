@@ -11,7 +11,6 @@ export const badgeVariants = cva(
         secondary: 'border-transparent bg-secondary text-secondary-foreground',
         outline: 'border-border bg-transparent text-muted-foreground',
         brand: 'border-transparent bg-brand text-brand-foreground',
-        live: 'border-brand/20 bg-brand-soft text-brand',
         positive: 'border-transparent bg-positive-soft text-positive',
         warning: 'border-transparent bg-warning-soft text-warning',
         negative: 'border-transparent bg-negative-soft text-negative',

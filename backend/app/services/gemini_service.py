@@ -1,6 +1,10 @@
+import asyncio
 import json
 import logging
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+
+import httpx
+
 from app.core.config import settings
 from app.schemas.meeting import MinutesOfMeetingSchema
 from app.services.prompts import build_document_summary_prompt, build_mom_prompt
@@ -14,44 +18,108 @@ class AIServiceUnavailable(RuntimeError):
 
 class GeminiService:
     def __init__(self):
-        self.api_key = settings.GEMINI_API_KEY
+        self.api_key = (settings.GEMINI_API_KEY or "").strip()
         self.model_name = settings.GEMINI_MODEL
-        self._client = None
-
+        self.timeout = settings.GEMINI_TIMEOUT_SECONDS
         if self.api_key:
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=self.api_key)
-                self._client = genai.GenerativeModel(self.model_name)
-                logger.info("Gemini client initialized with model %s", self.model_name)
-            except Exception as exc:
-                logger.warning("Could not initialize Google Generative AI client: %s", exc)
+            logger.info("Gemini REST client configured with model %s", self.model_name)
 
     @property
     def is_configured(self) -> bool:
-        return self._client is not None
+        return bool(self.api_key)
+
+    def _url(self, model: str) -> str:
+        return (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent"
+        )
+
+    def _models(self) -> List[str]:
+        models = [self.model_name, *settings.GEMINI_FALLBACK_MODELS]
+        return list(dict.fromkeys(model for model in models if model))
+
+    async def _generate_json(self, prompt: str) -> Dict[str, Any]:
+        if not self.api_key:
+            raise AIServiceUnavailable("GEMINI_API_KEY is not configured.")
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 8192,
+                "responseMimeType": "application/json",
+            },
+        }
+        last_error = "Gemini did not return a usable response."
+
+        for model in self._models():
+            for attempt in range(2):
+                try:
+                    async with httpx.AsyncClient(timeout=self.timeout) as client:
+                        response = await client.post(
+                            self._url(model),
+                            headers={
+                                "x-goog-api-key": self.api_key,
+                                "Content-Type": "application/json",
+                            },
+                            json=payload,
+                        )
+                except httpx.ConnectError:
+                    last_error = "Gemini is not reachable. Check your internet connection."
+                    await asyncio.sleep(1)
+                    continue
+                except httpx.TimeoutException:
+                    last_error = f"Gemini timed out after {self.timeout}s."
+                    await asyncio.sleep(1)
+                    continue
+
+                if response.status_code in {404, 429, 500, 502, 503, 504}:
+                    try:
+                        message = response.json().get("error", {}).get("message", "")
+                    except Exception:
+                        message = response.text[:300]
+                    last_error = f"Gemini ({model}) returned HTTP {response.status_code}: {message}"
+                    if attempt == 0:
+                        await asyncio.sleep(1.5)
+                    continue
+
+                if response.status_code != 200:
+                    message = response.text[:500]
+                    try:
+                        message = response.json().get("error", {}).get("message", message)
+                    except Exception:
+                        pass
+                    raise AIServiceUnavailable(
+                        f"Gemini returned HTTP {response.status_code}: {message}"
+                    )
+
+                try:
+                    body = response.json()
+                    text_parts = []
+                    for candidate in body.get("candidates", []):
+                        for part in candidate.get("content", {}).get("parts", []):
+                            if part.get("text"):
+                                text_parts.append(part["text"])
+                    raw = "".join(text_parts).strip()
+                    raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                    data = json.loads(raw)
+                    if not isinstance(data, dict):
+                        raise ValueError("Gemini did not return a JSON object.")
+                    return data
+                except Exception as exc:
+                    last_error = f"Gemini ({model}) returned an invalid response: {exc}"
+                    logger.error(last_error)
+                    break
+
+        raise AIServiceUnavailable(last_error)
 
     async def summarize_document(self, title: str, text: str) -> Dict[str, Any]:
-        """
-        Generate an executive abstract and structured entity tags.
-        No fabricated fallback is returned: callers must handle AIServiceUnavailable.
-        """
-        if not self._client:
-            raise AIServiceUnavailable("GEMINI_API_KEY is not configured.")
         if not text.strip():
             raise AIServiceUnavailable("No extracted text is available to summarize.")
-
-        prompt = build_document_summary_prompt(title, text)
-        try:
-            response = self._client.generate_content(prompt)
-            clean_text = response.text.strip().removeprefix("```json").removesuffix("```").strip()
-            data = json.loads(clean_text)
-            if not isinstance(data.get("abstract_summary"), str):
-                raise ValueError("Gemini response did not contain abstract_summary.")
-            return data
-        except Exception as exc:
-            logger.error("Gemini document summarization failed: %s", exc)
-            raise AIServiceUnavailable(f"Gemini document summarization failed: {exc}") from exc
+        data = await self._generate_json(build_document_summary_prompt(title, text))
+        if not isinstance(data.get("abstract_summary"), str) or not data["abstract_summary"].strip():
+            raise AIServiceUnavailable("Gemini did not return an abstract_summary.")
+        return data
 
     async def synthesize_meeting_mom(
         self,
@@ -59,34 +127,27 @@ class GeminiService:
         agendas: List[str],
         transcripts: List[Dict[str, Any]],
     ) -> MinutesOfMeetingSchema:
-        """
-        Synthesize bilingual transcripts into structured minutes.
-        No fabricated fallback is returned: callers must handle AIServiceUnavailable.
-        """
-        if not self._client:
-            raise AIServiceUnavailable("GEMINI_API_KEY is not configured.")
-
-        dialogue_lines = []
-        for item in transcripts:
-            speaker = item.get("speaker_label", "Speaker")
-            original = item.get("original_text", "")
-            translated = item.get("translated_text", "")
-            dialogue_lines.append(
-                f"[{speaker}]: {original}" + (f" (Translation: {translated})" if translated else "")
+        full_dialogue = "\n".join(
+            f"[{item.get('speaker_label', 'Speaker')}]: {item.get('original_text', '')}"
+            + (
+                f" (Translation: {item.get('translated_text')})"
+                if item.get("translated_text")
+                else ""
             )
-        full_dialogue = "\n".join(dialogue_lines)
+            for item in transcripts
+        )
         if not full_dialogue.strip():
             raise AIServiceUnavailable("No transcript text is available for synthesis.")
 
-        prompt = build_mom_prompt(meeting_title, agendas, transcripts)
+        data = await self._generate_json(
+            build_mom_prompt(meeting_title, agendas, transcripts)
+        )
         try:
-            response = self._client.generate_content(prompt)
-            clean_text = response.text.strip().removeprefix("```json").removesuffix("```").strip()
-            data = json.loads(clean_text)
             return MinutesOfMeetingSchema(**data)
         except Exception as exc:
-            logger.error("Gemini MoM synthesis failed: %s", exc)
-            raise AIServiceUnavailable(f"Gemini MoM synthesis failed: {exc}") from exc
+            raise AIServiceUnavailable(
+                f"Gemini returned an invalid minutes structure: {exc}"
+            ) from exc
 
 
 gemini_service = GeminiService()

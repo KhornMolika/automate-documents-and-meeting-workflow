@@ -1,5 +1,4 @@
-from typing import List, Union
-from pydantic import AnyHttpUrl, field_validator
+from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,9 +20,6 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite+aiosqlite:///./aub_workflow.db"
     DATABASE_URL_SYNC: str = "sqlite:///./aub_workflow.db"
 
-    # Redis
-    REDIS_URL: str = "redis://localhost:6379/0"
-
     # Security & JWT
     SECRET_KEY: str = "acleda_development_secret_key_change_in_production_2026"
     JWT_ALGORITHM: str = "HS256"
@@ -40,7 +36,9 @@ class Settings(BaseSettings):
 
     # Google Gemini API
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-1.5-pro"
+    GEMINI_MODEL: str = "gemini-3.5-flash"
+    GEMINI_FALLBACK_MODELS: List[str] = ["gemini-3.6-flash", "gemini-3.1-flash-lite"]
+    GEMINI_TIMEOUT_SECONDS: int = 120
 
     # Generative LLM provider: auto | gemini | ollama | opencode
     # auto uses Gemini when GEMINI_API_KEY is set, otherwise the local Ollama model.
@@ -51,21 +49,21 @@ class Settings(BaseSettings):
     OLLAMA_TIMEOUT_SECONDS: int = 300
     OPENCODE_BASE_URL: str = "https://opencode.ai/inference/openai/v1"
     OPENCODE_API_KEY: str = ""
-    OPENCODE_MODEL: str = "gemini-3.8-flash"
+    OPENCODE_MODEL: str = "gemini-3.1-flash-lite"
     OPENCODE_SESSION: str = "aub-workflow"
-
-    # Google Workspace OAuth 2.0
-    GOOGLE_CLIENT_ID: str = ""
-    GOOGLE_CLIENT_SECRET: str = ""
-    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/google/callback"
-    GOOGLE_DRIVE_ROOT_FOLDER_ID: str = ""
 
     # File storage limits
     MAX_UPLOAD_SIZE_MB: int = 50
     ALLOWED_EXTENSIONS: List[str] = ["pdf", "docx", "xlsx", "csv"]
 
-    # Local speech service
+    # Local speech service (batch transcription only)
     SPEECH_SERVICE_URL: str = "http://localhost:8001"
+    SPEECH_TIMEOUT_SECONDS: int = 3600
+    MAX_RECORDING_SIZE_MB: int = 500
+    ALLOWED_RECORDING_EXTENSIONS: List[str] = [
+        "mp4", "m4a", "mp3", "wav", "webm", "ogg", "aac", "flac", "mov",
+    ]
+    ALLOWED_TRANSCRIPT_EXTENSIONS: List[str] = ["txt", "vtt", "srt", "docx"]
 
 
 settings = Settings()

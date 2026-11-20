@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { CalendarDays, Plus } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { Button } from '~/components/ui/button'
-import { Card, CardDescription, CardHeader, CardTitle } from '~/components/ui/card'
+import { Card } from '~/components/ui/card'
 import {
   Dialog,
   DialogContent,
@@ -23,24 +23,19 @@ import StatusBadge from '~/components/workspace/StatusBadge.vue'
 import { useApi } from '~/composables/useApi'
 import { useAuth } from '~/composables/useAuth'
 import { formatDate, formatTimeRange, plural } from '~/lib/format'
-import type { Dashboard, Meeting } from '~/types/api'
+import type { Meeting } from '~/types/api'
 
 useHead({ title: 'Meetings · ACLEDA University' })
 
 const api = useApi()
 const { user } = useAuth()
-const { data, pending, error, refresh } = await useAsyncData('meetings-page', async () => {
-  const [meetings, dashboard] = await Promise.all([
-    api<Meeting[]>('/meetings', { query: { limit: 200 } }),
-    api<Dashboard>('/dashboard'),
-  ])
-  return { meetings, dashboard }
-})
+const { data, pending, error, refresh } = await useAsyncData('meetings-page', () =>
+  api<Meeting[]>('/meetings', { query: { limit: 200 } }),
+)
 
-const meetingList = computed(() => data.value?.meetings ?? [])
-const dashboard = computed(() => data.value?.dashboard)
+const meetingList = computed(() => data.value ?? [])
 const departmentName = computed(() => user.value?.department?.name ?? 'Department workspace')
-const activeFilter = ref<'all' | 'live' | 'scheduled' | 'completed'>('all')
+const activeFilter = ref<'all' | 'scheduled' | 'draft' | 'published'>('all')
 const newMeetingOpen = ref(false)
 const saving = ref(false)
 const showMore = ref(false)
@@ -49,6 +44,19 @@ const meetingForm = ref({
   description: '',
   agenda: '',
 })
+
+function stateOf(meeting: Meeting) {
+  if (meeting.summary?.is_verified) return 'Published'
+  if (meeting.summary) return 'Draft'
+  return 'Scheduled'
+}
+
+function actionLabel(meeting: Meeting) {
+  const state = stateOf(meeting)
+  if (state === 'Published') return 'View minutes'
+  if (state === 'Draft') return 'Continue minutes'
+  return 'Open workspace'
+}
 
 function resetMeetingForm() {
   meetingForm.value = {
@@ -68,35 +76,27 @@ watch(newMeetingOpen, (open) => {
 const filters = computed(() => [
   { value: 'all' as const, label: 'All', count: meetingList.value.length },
   {
-    value: 'live' as const,
-    label: 'Live',
-    count: meetingList.value.filter(meeting => meeting.status === 'In Progress').length,
-  },
-  {
     value: 'scheduled' as const,
     label: 'Scheduled',
-    count: meetingList.value.filter(meeting => meeting.status === 'Scheduled').length,
+    count: meetingList.value.filter(meeting => stateOf(meeting) === 'Scheduled').length,
   },
   {
-    value: 'completed' as const,
-    label: 'Completed',
-    count: meetingList.value.filter(meeting => meeting.status === 'Completed').length,
+    value: 'draft' as const,
+    label: 'Draft',
+    count: meetingList.value.filter(meeting => stateOf(meeting) === 'Draft').length,
+  },
+  {
+    value: 'published' as const,
+    label: 'Published',
+    count: meetingList.value.filter(meeting => stateOf(meeting) === 'Published').length,
   },
 ])
 
 const filteredMeetings = computed(() => {
   if (activeFilter.value === 'all') return meetingList.value
-  if (activeFilter.value === 'live') {
-    return meetingList.value.filter(meeting => meeting.status === 'In Progress')
-  }
-  if (activeFilter.value === 'scheduled') {
-    return meetingList.value.filter(meeting => meeting.status === 'Scheduled')
-  }
-  return meetingList.value.filter(meeting => meeting.status === 'Completed')
+  const label = activeFilter.value.charAt(0).toUpperCase() + activeFilter.value.slice(1)
+  return meetingList.value.filter(meeting => stateOf(meeting) === label)
 })
-
-const recentDecisions = computed(() => dashboard.value?.recent_decisions ?? [])
-const openActionItems = computed(() => dashboard.value?.action_items ?? [])
 
 async function addMeeting() {
   const departmentId = user.value?.department_id
@@ -144,17 +144,13 @@ async function addMeeting() {
 function reviewLink(meetingId: string) {
   return `/meetings/${meetingId}/review`
 }
-
-function itemDue(deadline?: string | null) {
-  return deadline ? formatDate(deadline) : 'No deadline'
-}
 </script>
 
 <template>
   <div>
     <PageHeader
       title="Meetings"
-      :description="`Scheduled sessions, live captures and verified minutes in ${departmentName}.`"
+      :description="`Recordings, transcripts and published minutes in ${departmentName}.`"
     >
       <template #actions>
         <Button variant="outline" @click="newMeetingOpen = true">
@@ -187,9 +183,6 @@ function itemDue(deadline?: string | null) {
             <span class="tabular-nums text-[13px] text-muted-foreground">{{ filter.count }}</span>
           </button>
         </div>
-        <p v-if="dashboard?.live_meeting" class="pb-2 text-[13px] text-muted-foreground">
-          {{ dashboard.live_meeting.title }} is live
-        </p>
       </div>
 
       <Card v-if="filteredMeetings.length" class="mt-4 overflow-hidden" data-testid="meeting-list">
@@ -209,26 +202,20 @@ function itemDue(deadline?: string | null) {
           <div class="min-w-0 flex-1">
             <div class="flex flex-wrap items-center gap-2">
               <p class="truncate text-sm font-medium">{{ meeting.title }}</p>
-              <StatusBadge :status="meeting.status" />
+              <StatusBadge :status="stateOf(meeting)" />
             </div>
             <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground">
               <span>{{ plural(meeting.participant_count, 'participant') }}</span>
               <span aria-hidden="true">·</span>
               <span>{{ plural(meeting.agendas.length, 'agenda item') }}</span>
-              <span v-if="meeting.summary?.is_verified" aria-hidden="true">·</span>
-              <span v-if="meeting.summary?.is_verified">Minutes verified</span>
+              <span v-if="meeting.summary" aria-hidden="true">·</span>
+              <span v-if="meeting.summary">{{ plural(meeting.summary.action_items.length, 'action item') }}</span>
             </p>
           </div>
 
           <div class="flex shrink-0 items-center gap-2">
-            <Button v-if="meeting.status === 'In Progress'" as-child size="sm">
-              <NuxtLink :to="`/meetings/${meeting.id}/live`">Open live</NuxtLink>
-            </Button>
-            <Button v-else-if="meeting.status === 'Scheduled'" as-child size="sm" variant="outline">
-              <NuxtLink :to="`/meetings/${meeting.id}/live`">Open console</NuxtLink>
-            </Button>
-            <Button v-else-if="meeting.status === 'Completed'" as-child size="sm" variant="outline">
-              <NuxtLink :to="reviewLink(meeting.id)">View minutes</NuxtLink>
+            <Button as-child size="sm" variant="outline">
+              <NuxtLink :to="reviewLink(meeting.id)">{{ actionLabel(meeting) }}</NuxtLink>
             </Button>
           </div>
         </div>
@@ -245,70 +232,13 @@ function itemDue(deadline?: string | null) {
         v-else
         class="mt-4"
         :title="meetingList.length ? 'No meetings in this view' : 'No meetings yet'"
-        :description="meetingList.length ? 'Switch the filter to see the other meetings.' : 'Schedule the first meeting to prepare an agenda and minutes.'"
+        :description="meetingList.length ? 'Switch the filter to see the other meetings.' : 'Create the first meeting, then add a recording or transcript.'"
       >
         <Button variant="outline" size="sm" class="mt-3" @click="newMeetingOpen = true">
           <Plus class="h-4 w-4" />
           New meeting
         </Button>
       </EmptyState>
-
-      <div class="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
-        <Card class="flex flex-col lg:col-span-7">
-          <CardHeader class="pb-3">
-            <CardTitle>Recent decisions</CardTitle>
-            <CardDescription class="mt-1">Agreed outcomes from verified minutes.</CardDescription>
-          </CardHeader>
-          <div v-if="recentDecisions.length" class="flex-1 border-t">
-            <div
-              v-for="decision in recentDecisions"
-              :key="decision.id"
-              class="flex items-start gap-3 border-b px-5 py-3 last:border-b-0"
-            >
-              <div class="min-w-0 flex-1">
-                <p class="text-[13px] leading-snug">{{ decision.text }}</p>
-                <p class="mt-1 text-[13px] text-muted-foreground">
-                  {{ decision.meeting_title }} · {{ formatDate(decision.date) }}
-                </p>
-              </div>
-              <NuxtLink
-                :to="reviewLink(decision.meeting_id)"
-                class="shrink-0 text-[13px] font-medium text-brand hover:underline"
-              >
-                Minutes
-              </NuxtLink>
-            </div>
-          </div>
-          <div v-else class="flex flex-1 items-center border-t px-5 py-6">
-            <p class="text-[13px] text-muted-foreground">No verified decisions yet.</p>
-          </div>
-        </Card>
-
-        <Card class="flex flex-col lg:col-span-5">
-          <CardHeader class="pb-3">
-            <CardTitle>Open action items</CardTitle>
-            <CardDescription class="mt-1">Tasks from verified minutes that are not complete.</CardDescription>
-          </CardHeader>
-          <div v-if="openActionItems.length" class="flex-1 border-t">
-            <div
-              v-for="item in openActionItems"
-              :key="item.id"
-              class="flex items-center gap-3 border-b px-5 py-3 last:border-b-0"
-            >
-              <div class="min-w-0 flex-1">
-                <p class="line-clamp-1 text-[13px] font-medium">{{ item.task }}</p>
-                <p class="mt-0.5 text-[13px] text-muted-foreground">
-                  {{ item.assignee || 'Unassigned' }} · due {{ itemDue(item.deadline) }}
-                </p>
-              </div>
-              <StatusBadge :status="item.status" />
-            </div>
-          </div>
-          <div v-else class="flex flex-1 items-center border-t px-5 py-6">
-            <p class="text-[13px] text-muted-foreground">No open action items.</p>
-          </div>
-        </Card>
-      </div>
     </template>
 
     <Dialog v-model:open="newMeetingOpen">

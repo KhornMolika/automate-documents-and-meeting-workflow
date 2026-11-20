@@ -151,6 +151,8 @@ async def list_documents(
         .offset(skip)
         .limit(limit)
     )
+    if current_user.department_id:
+        stmt = stmt.where(Document.department_id == current_user.department_id)
     if category_id:
         stmt = stmt.where(Document.category_id == category_id)
     if academic_year:
@@ -180,15 +182,18 @@ async def search_documents(
         select(Document)
         .join(DocumentVersion, Document.id == DocumentVersion.document_id)
         .where(
+            Document.is_archived.is_(False),
             or_(
                 Document.title.ilike(pattern),
                 DocumentVersion.extracted_text.ilike(pattern),
                 DocumentVersion.abstract_summary.ilike(pattern),
-            )
+            ),
         )
         .options(selectinload(Document.category), selectinload(Document.versions))
         .distinct()
     )
+    if current_user.department_id:
+        stmt = stmt.where(Document.department_id == current_user.department_id)
 
     res = await db.execute(stmt)
     docs = res.scalars().all()

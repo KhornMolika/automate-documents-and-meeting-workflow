@@ -5,7 +5,6 @@ export default defineNuxtConfig({
   devtools: { enabled: false },
   modules: [
     '@nuxtjs/tailwindcss',
-    '@pinia/nuxt',
   ],
   css: ['~/assets/css/main.css'],
   app: {
@@ -24,7 +23,6 @@ export default defineNuxtConfig({
   runtimeConfig: {
     public: {
       apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:8000/api/v1',
-      wsBase: process.env.NUXT_PUBLIC_WS_BASE || 'ws://localhost:8000',
     }
   }
 })

@@ -1,37 +1,71 @@
 import json
-from typing import List, Optional, Any
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, desc
+from typing import Any, List, Optional
+
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+)
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.database import get_db
 from app.api.deps import get_current_user
-from app.models.user import User
+from app.core.config import settings
+from app.core.database import get_db
 from app.models.meeting import (
+    ActionItem,
+    Decision,
     Meeting,
     MeetingAgenda,
     MeetingParticipant,
-    MeetingTranscript,
     MeetingSummary,
-    Decision,
-    ActionItem,
+    MeetingTranscript,
+    TranscriptionJob,
 )
+from app.models.user import User
 from app.schemas.meeting import (
     MeetingCreate,
     MeetingOut,
-    TranscriptSegmentCreate,
-    TranscriptSegmentOut,
-    TranscriptSegmentUpdate,
+    MeetingSummaryOut,
     MinutesOfMeetingSchema,
     MoMApprovalInput,
     MoMDraftInput,
-    MeetingSummaryOut,
+    RecordingUrlInput,
+    TranscriptImportResult,
+    TranscriptSegmentOut,
+    TranscriptSegmentUpdate,
+    TranscriptionJobOut,
 )
-from app.services.llm_service import llm_service, AIServiceUnavailable
+from app.services.llm_service import AIServiceUnavailable, llm_service
+from app.services.minutes import export_verified_minutes
+from app.services.transcript_parser import parse_transcript
+from app.services.transcription import (
+    latest_job,
+    replace_transcripts,
+    run_transcription_job,
+    save_recording_upload,
+    validate_source_url,
+)
 
 router = APIRouter(prefix="/meetings", tags=["Meeting Management"])
+
+ALLOWED_LANGUAGES = {"km", "en", "auto"}
+
+
+def _meeting_options():
+    return (
+        selectinload(Meeting.agendas),
+        selectinload(Meeting.participants).selectinload(MeetingParticipant.user),
+        selectinload(Meeting.department),
+        selectinload(Meeting.summary).selectinload(MeetingSummary.decisions),
+        selectinload(Meeting.summary).selectinload(MeetingSummary.action_items),
+    )
 
 
 @router.post("", response_model=MeetingOut)
@@ -62,29 +96,19 @@ async def create_meeting(
     )
 
     for item in meeting_in.agendas:
-        agenda = MeetingAgenda(
-            meeting_id=new_meeting.id,
-            item_order=item.item_order,
-            title=item.title,
-            description=item.description,
-            duration_minutes=item.duration_minutes,
+        db.add(
+            MeetingAgenda(
+                meeting_id=new_meeting.id,
+                item_order=item.item_order,
+                title=item.title,
+                description=item.description,
+                duration_minutes=item.duration_minutes,
+            )
         )
-        db.add(agenda)
 
     await db.commit()
-
-    # Re-fetch with agendas
-    stmt = (
-        select(Meeting)
-        .where(Meeting.id == new_meeting.id)
-        .options(
-            selectinload(Meeting.agendas),
-            selectinload(Meeting.participants),
-            selectinload(Meeting.summary),
-        )
-    )
-    res = await db.execute(stmt)
-    return res.scalar_one()
+    stmt = select(Meeting).where(Meeting.id == new_meeting.id).options(*_meeting_options())
+    return (await db.execute(stmt)).scalar_one()
 
 
 @router.get("", response_model=List[MeetingOut])
@@ -98,12 +122,7 @@ async def list_meetings(
 ) -> Any:
     stmt = (
         select(Meeting)
-        .options(
-            selectinload(Meeting.agendas),
-            selectinload(Meeting.participants),
-            selectinload(Meeting.summary).selectinload(MeetingSummary.decisions),
-            selectinload(Meeting.summary).selectinload(MeetingSummary.action_items),
-        )
+        .options(*_meeting_options())
         .order_by(desc(Meeting.scheduled_start))
         .offset(skip)
         .limit(limit)
@@ -113,23 +132,7 @@ async def list_meetings(
     if status_filter:
         stmt = stmt.where(Meeting.status == status_filter)
 
-    res = await db.execute(stmt)
-    return res.scalars().all()
-
-
-@router.get("/{meeting_id}/capture-info")
-async def get_meeting_capture_info(
-    meeting_id: str,
-    db: AsyncSession = Depends(get_db),
-) -> Any:
-    """Minimal, public metadata so the capture extension can confirm the target meeting.
-
-    Meeting IDs are unguessable UUIDs; only the title and status are exposed.
-    """
-    meeting = await db.get(Meeting, meeting_id)
-    if not meeting:
-        raise HTTPException(status_code=404, detail="Meeting not found")
-    return {"id": meeting.id, "title": meeting.title, "status": meeting.status}
+    return (await db.execute(stmt)).scalars().all()
 
 
 @router.get("/{meeting_id}", response_model=MeetingOut)
@@ -138,76 +141,133 @@ async def get_meeting_detail(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    stmt = (
-        select(Meeting)
-        .where(Meeting.id == meeting_id)
-        .options(
-            selectinload(Meeting.agendas),
-            selectinload(Meeting.participants),
-            selectinload(Meeting.summary).selectinload(MeetingSummary.decisions),
-            selectinload(Meeting.summary).selectinload(MeetingSummary.action_items),
-        )
-    )
-    res = await db.execute(stmt)
-    meeting = res.scalar_one_or_none()
+    stmt = select(Meeting).where(Meeting.id == meeting_id).options(*_meeting_options())
+    meeting = (await db.execute(stmt)).scalar_one_or_none()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting session not found")
     return meeting
 
 
-@router.post("/{meeting_id}/start")
-async def start_meeting(
+@router.post("/{meeting_id}/recording", response_model=TranscriptionJobOut)
+async def upload_recording(
     meeting_id: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    language: str = Form("km"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
     meeting = await db.get(Meeting, meeting_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
-    meeting.status = "In Progress"
-    await db.commit()
-    return {"id": meeting.id, "status": meeting.status}
+    if language not in ALLOWED_LANGUAGES:
+        raise HTTPException(status_code=400, detail="Language must be km, en or auto.")
+    try:
+        path, _filename, _size = await save_recording_upload(file)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-
-@router.post("/{meeting_id}/end")
-async def end_meeting(
-    meeting_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    meeting = await db.get(Meeting, meeting_id)
-    if not meeting:
-        raise HTTPException(status_code=404, detail="Meeting not found")
-    meeting.status = "Completed"
-    await db.commit()
-    return {"id": meeting.id, "status": meeting.status}
-
-
-@router.post("/{meeting_id}/transcripts", response_model=TranscriptSegmentOut)
-async def add_transcript_segment(
-    meeting_id: str,
-    segment_in: TranscriptSegmentCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> Any:
-    meeting = await db.get(Meeting, meeting_id)
-    if not meeting:
-        raise HTTPException(status_code=404, detail="Meeting not found")
-
-    new_segment = MeetingTranscript(
+    job = TranscriptionJob(
         meeting_id=meeting_id,
-        speaker_label=segment_in.speaker_label,
-        start_timestamp=segment_in.start_timestamp,
-        end_timestamp=segment_in.end_timestamp,
-        original_text=segment_in.original_text,
-        translated_text=segment_in.translated_text,
-        confidence_score=segment_in.confidence_score,
-        language_detected=segment_in.language_detected,
+        status="queued",
+        language=language,
+        source_type="upload",
+        source_name=str(path),
     )
-    db.add(new_segment)
+    db.add(job)
     await db.commit()
-    await db.refresh(new_segment)
-    return new_segment
+    await db.refresh(job)
+    background_tasks.add_task(run_transcription_job, job.id)
+    return job
+
+
+@router.post("/{meeting_id}/from-link", response_model=TranscriptionJobOut)
+async def transcribe_from_link(
+    meeting_id: str,
+    payload: RecordingUrlInput,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    meeting = await db.get(Meeting, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    if payload.language not in ALLOWED_LANGUAGES:
+        raise HTTPException(status_code=400, detail="Language must be km, en or auto.")
+    try:
+        url = await validate_source_url(payload.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    job = TranscriptionJob(
+        meeting_id=meeting_id,
+        status="queued",
+        language=payload.language,
+        source_type="url",
+        source_name=url,
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    background_tasks.add_task(run_transcription_job, job.id)
+    return job
+
+
+@router.get("/{meeting_id}/transcription", response_model=Optional[TranscriptionJobOut])
+async def get_transcription_job(
+    meeting_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    meeting = await db.get(Meeting, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    return await latest_job(db, meeting_id)
+
+
+@router.post("/{meeting_id}/transcripts/import", response_model=TranscriptImportResult)
+async def import_transcript(
+    meeting_id: str,
+    file: Optional[UploadFile] = File(None),
+    text: Optional[str] = Form(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    meeting = await db.get(Meeting, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    if not file and not (text and text.strip()):
+        raise HTTPException(status_code=400, detail="Provide a transcript file or pasted text.")
+
+    if file:
+        filename = file.filename or "transcript.txt"
+        extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if extension not in settings.ALLOWED_TRANSCRIPT_EXTENSIONS:
+            allowed = ", ".join(settings.ALLOWED_TRANSCRIPT_EXTENSIONS)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported transcript type. Allowed: {allowed}.",
+            )
+        content = await file.read()
+        if len(content) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="The transcript file is larger than 10 MB.")
+    else:
+        filename = "pasted-notes.txt"
+        content = (text or "").encode("utf-8")
+
+    try:
+        segments = parse_transcript(filename, content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    existing = await db.scalar(
+        select(MeetingTranscript.id).where(MeetingTranscript.meeting_id == meeting_id).limit(1)
+    )
+    written = await replace_transcripts(db, meeting_id, segments)
+    if written == 0:
+        raise HTTPException(status_code=400, detail="The transcript did not contain readable text.")
+    await db.commit()
+    return {"imported": written, "replaced": 1 if existing else 0}
 
 
 @router.put("/{meeting_id}/transcripts/{transcript_id}", response_model=TranscriptSegmentOut)
@@ -221,6 +281,8 @@ async def update_transcript_segment(
     segment = await db.get(MeetingTranscript, transcript_id)
     if not segment or segment.meeting_id != meeting_id:
         raise HTTPException(status_code=404, detail="Transcript segment not found")
+    if segment_in.speaker_label is not None:
+        segment.speaker_label = segment_in.speaker_label.strip() or "Speaker"
     if segment_in.original_text is not None:
         segment.original_text = segment_in.original_text.strip()
     if segment_in.translated_text is not None:
@@ -242,10 +304,9 @@ async def get_meeting_transcripts(
             MeetingTranscript.meeting_id == meeting_id,
             MeetingTranscript.original_text != "",
         )
-        .order_by(MeetingTranscript.start_timestamp)
+        .order_by(MeetingTranscript.start_timestamp, MeetingTranscript.created_at)
     )
-    res = await db.execute(stmt)
-    return res.scalars().all()
+    return (await db.execute(stmt)).scalars().all()
 
 
 @router.post("/{meeting_id}/synthesize-mom", response_model=MinutesOfMeetingSchema)
@@ -254,40 +315,42 @@ async def synthesize_mom(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    """
-    Triggers Gemini 1.5 Pro to synthesize raw transcripts into structured MoM draft.
-    """
     stmt = (
         select(Meeting)
         .where(Meeting.id == meeting_id)
-        .options(selectinload(Meeting.agendas), selectinload(Meeting.participants), selectinload(Meeting.transcripts))
+        .options(
+            selectinload(Meeting.agendas),
+            selectinload(Meeting.participants),
+            selectinload(Meeting.transcripts),
+        )
     )
-    res = await db.execute(stmt)
-    meeting = res.scalar_one_or_none()
+    meeting = (await db.execute(stmt)).scalar_one_or_none()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
     if not meeting.transcripts:
-        raise HTTPException(status_code=400, detail="Add at least one transcript segment before generating MoM.")
+        raise HTTPException(
+            status_code=400,
+            detail="Add a transcript before generating minutes.",
+        )
 
-    agendas = [a.title for a in meeting.agendas]
-    transcripts_list = [
+    agendas = [agenda.title for agenda in meeting.agendas]
+    transcripts = [
         {
-            "speaker_label": t.speaker_label,
-            "original_text": t.original_text,
-            "translated_text": t.translated_text,
+            "speaker_label": item.speaker_label,
+            "original_text": item.original_text,
+            "translated_text": item.translated_text,
         }
-        for t in meeting.transcripts
+        for item in meeting.transcripts
     ]
 
     try:
-        mom_data = await llm_service.synthesize_meeting_mom(
+        return await llm_service.synthesize_meeting_mom(
             meeting_title=meeting.title,
             agendas=agendas,
-            transcripts=transcripts_list,
+            transcripts=transcripts,
         )
     except AIServiceUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return mom_data
 
 
 @router.put("/{meeting_id}/mom-draft", response_model=MeetingSummaryOut)
@@ -356,6 +419,7 @@ async def save_mom_draft(
         select(MeetingSummary)
         .where(MeetingSummary.id == summary.id)
         .options(selectinload(MeetingSummary.decisions), selectinload(MeetingSummary.action_items))
+        .execution_options(populate_existing=True)
     )
     return (await db.execute(stmt)).scalar_one()
 
@@ -367,22 +431,13 @@ async def approve_and_publish_mom(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    """
-    Human-in-the-Loop review confirmation: saves verified MoM and creates local DOCX/CSV exports.
-    """
-    meeting = await db.get(Meeting, meeting_id)
+    """Verify the minutes, write DOCX/CSV exports and archive them as a Document."""
+    stmt = select(Meeting).where(Meeting.id == meeting_id).options(*_meeting_options())
+    meeting = (await db.execute(stmt)).scalar_one_or_none()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
 
-    # Check if a summary record already exists
-    stmt = (
-        select(MeetingSummary)
-        .where(MeetingSummary.meeting_id == meeting_id)
-        .options(selectinload(MeetingSummary.decisions), selectinload(MeetingSummary.action_items))
-    )
-    res = await db.execute(stmt)
-    summary = res.scalar_one_or_none()
-
+    summary = meeting.summary
     if not summary:
         summary = MeetingSummary(
             meeting_id=meeting_id,
@@ -400,44 +455,51 @@ async def approve_and_publish_mom(
         summary.is_verified = True
         summary.verified_by = current_user.id
         summary.verified_at = datetime.utcnow()
-        # Clean existing decisions & items to replace with verified version
-        for d in summary.decisions:
-            await db.delete(d)
-        for a in summary.action_items:
-            await db.delete(a)
+        for decision in summary.decisions:
+            await db.delete(decision)
+        for item in summary.action_items:
+            await db.delete(item)
         await db.flush()
 
-    # Commit verified decisions
-    for idx, d in enumerate(approval_in.decisions, start=1):
-        dec_record = Decision(
-            summary_id=summary.id,
-            agenda_topic=d.agenda_topic,
-            decision_text=d.decision_text,
-            context_notes=d.context_notes,
-            order_index=idx,
+    for index, decision in enumerate(approval_in.decisions, start=1):
+        db.add(
+            Decision(
+                summary_id=summary.id,
+                agenda_topic=decision.agenda_topic,
+                decision_text=decision.decision_text,
+                context_notes=decision.context_notes,
+                order_index=index,
+            )
         )
-        db.add(dec_record)
 
-    # Commit verified action items
     for item in approval_in.action_items:
-        act_record = ActionItem(
-            summary_id=summary.id,
-            task_description=item.task_description,
-            raw_assignee_name=item.assignee_name,
-            deadline=item.deadline,
-            status="Pending",
+        db.add(
+            ActionItem(
+                summary_id=summary.id,
+                task_description=item.task_description,
+                raw_assignee_name=item.assignee_name,
+                deadline=item.deadline,
+                status="Pending",
+            )
         )
-        db.add(act_record)
 
     meeting.status = "Completed"
-    await db.commit()
+    await db.flush()
 
-    # Re-fetch summary with newly populated decisions and action items
     stmt = (
         select(MeetingSummary)
         .where(MeetingSummary.id == summary.id)
         .options(selectinload(MeetingSummary.decisions), selectinload(MeetingSummary.action_items))
+        .execution_options(populate_existing=True)
     )
-    res = await db.execute(stmt)
-    refreshed_summary = res.scalar_one()
-    return refreshed_summary
+    verified = (await db.execute(stmt)).scalar_one()
+    await export_verified_minutes(db, meeting, verified)
+    await db.commit()
+
+    stmt = (
+        select(MeetingSummary)
+        .where(MeetingSummary.id == summary.id)
+        .options(selectinload(MeetingSummary.decisions), selectinload(MeetingSummary.action_items))
+        .execution_options(populate_existing=True)
+    )
+    return (await db.execute(stmt)).scalar_one()

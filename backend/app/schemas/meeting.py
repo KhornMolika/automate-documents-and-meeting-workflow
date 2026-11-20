@@ -34,6 +34,7 @@ class TranscriptSegmentOut(TranscriptSegmentCreate):
 
 
 class TranscriptSegmentUpdate(BaseModel):
+    speaker_label: Optional[str] = None
     original_text: Optional[str] = None
     translated_text: Optional[str] = None
 
@@ -127,9 +128,6 @@ class MoMApprovalInput(BaseModel):
     discussion_points: List[str]
     decisions: List[DecisionSchema]
     action_items: List[ActionItemSchema]
-    export_to_google_docs: bool = True
-    export_to_google_sheets: bool = True
-    notify_attendees_gmail: bool = False
 
 
 class MoMDraftInput(BaseModel):
@@ -137,3 +135,27 @@ class MoMDraftInput(BaseModel):
     discussion_points: List[str]
     decisions: List[DecisionSchema]
     action_items: List[ActionItemSchema]
+
+
+class RecordingUrlInput(BaseModel):
+    url: str
+    language: str = "km"
+
+
+class TranscriptionJobOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    meeting_id: str
+    status: str
+    language: str
+    source_type: str
+    source_name: Optional[str] = None
+    error: Optional[str] = None
+    segment_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class TranscriptImportResult(BaseModel):
+    imported: int
+    replaced: int

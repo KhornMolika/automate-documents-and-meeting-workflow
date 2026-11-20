@@ -21,7 +21,7 @@ export async function authenticate(page: Page, request: APIRequestContext) {
 export async function api<T>(
   request: APIRequestContext,
   token: string,
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
   data?: unknown,
 ): Promise<T> {
@@ -60,15 +60,13 @@ export async function createMeeting(
 }
 
 export async function addTranscript(request: APIRequestContext, token: string, meetingId: string) {
-  await api(request, token, 'POST', `/meetings/${meetingId}/transcripts`, {
-    speaker_label: 'E2E Speaker',
-    start_timestamp: 5,
-    end_timestamp: 12,
-    original_text: 'សូមពិនិត្យសំណើស្រាវជ្រាវនេះ។',
-    translated_text: 'Please review this research proposal.',
-    confidence_score: 0.95,
-    language_detected: 'km-en',
+  const response = await request.post(`${API}/meetings/${meetingId}/transcripts/import`, {
+    headers: { Authorization: `Bearer ${token}` },
+    multipart: {
+      text: 'E2E Speaker: សូមពិនិត្យសំណើស្រាវជ្រាវនេះ។\nE2E Chair: We will review the proposal before Friday.',
+    },
   })
+  expect(response.ok(), await response.text()).toBeTruthy()
 }
 
 function momPayload() {
@@ -93,37 +91,21 @@ function momPayload() {
   }
 }
 
-export async function endAllActiveMeetings(request: APIRequestContext, token: string) {
-  const meetings = await api<{ id: string, status: string }[]>(
-    request,
-    token,
-    'GET',
-    '/meetings?limit=200',
-  )
-  for (const meeting of meetings) {
-    if (meeting.status === 'In Progress') {
-      await api(request, token, 'POST', `/meetings/${meeting.id}/end`)
-    }
-  }
-}
-
-export async function seedLiveMeeting(request: APIRequestContext, token: string, title: string) {
-  await endAllActiveMeetings(request, token)
+export async function seedTranscriptMeeting(request: APIRequestContext, token: string, title: string) {
   const now = Date.now()
   const meeting = await createMeeting(
     request,
     token,
     title,
-    new Date(now - 5 * 60_000),
-    new Date(now + 55 * 60_000),
+    new Date(now + 60_000),
+    new Date(now + 30 * 60_000),
   )
-  await api(request, token, 'POST', `/meetings/${meeting.id}/start`)
   await addTranscript(request, token, meeting.id)
   return meeting
 }
 
 export async function seedDraftMeeting(request: APIRequestContext, token: string, title: string) {
-  const meeting = await seedLiveMeeting(request, token, title)
+  const meeting = await seedTranscriptMeeting(request, token, title)
   await api(request, token, 'PUT', `/meetings/${meeting.id}/mom-draft`, momPayload())
   return meeting
 }
@@ -137,7 +119,6 @@ export async function seedCompletedMeeting(request: APIRequestContext, token: st
     new Date(now - 2 * 3600_000),
     new Date(now - 1 * 3600_000),
   )
-  await api(request, token, 'POST', `/meetings/${meeting.id}/start`)
   await addTranscript(request, token, meeting.id)
   await api(request, token, 'PUT', `/meetings/${meeting.id}/mom-draft`, momPayload())
   await api(request, token, 'POST', `/meetings/${meeting.id}/approve-mom`, momPayload())

@@ -154,7 +154,7 @@ async function addDocument() {
     toast.success(
       created.latest_version?.abstract_summary
         ? 'Document uploaded and summarized.'
-        : 'Document uploaded. Use Generate summary in the document panel to create an AI abstract.',
+        : 'Document uploaded. You can generate an optional summary from the document panel.',
     )
   } catch (err: any) {
     toast.error(err?.data?.detail ?? 'Document upload failed.')
@@ -362,9 +362,19 @@ async function summarizeSelected() {
         </DialogHeader>
 
         <div v-if="selected" class="space-y-5">
+          <div v-if="selected.drive_file_id" class="flex flex-col gap-2 rounded-md border border-brand/20 bg-brand-soft px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p class="text-[13px] font-medium text-brand">Archived from a meeting</p>
+              <p class="mt-0.5 text-[13px] text-brand/80">The published minutes are stored with their source meeting.</p>
+            </div>
+            <Button variant="outline" size="sm" as-child>
+              <NuxtLink :to="`/meetings/${selected.drive_file_id}/review`">Open meeting</NuxtLink>
+            </Button>
+          </div>
+
           <div class="rounded-md border bg-muted/40 p-4">
-            <p class="text-[13px] font-medium text-muted-foreground">AI abstract</p>
-            <p v-if="selected.latest_version?.abstract_summary" class="mt-1.5 text-sm leading-relaxed">
+            <p class="text-[13px] font-medium text-muted-foreground">Summary</p>
+            <p v-if="selected.latest_version?.abstract_summary" data-testid="document-summary" class="mt-1.5 text-sm leading-relaxed">
               {{ selected.latest_version.abstract_summary }}
             </p>
             <div v-else class="mt-2 flex flex-col items-start gap-2">
@@ -412,7 +422,7 @@ async function summarizeSelected() {
         <DialogHeader>
           <DialogTitle>Add a document</DialogTitle>
           <DialogDescription>
-            The file is parsed, checksummed and stored by the API. AI summarization runs through the configured LLM provider.
+            The file is parsed, checksummed and stored by the API. An optional AI summary can be generated later from the document panel.
           </DialogDescription>
         </DialogHeader>
 

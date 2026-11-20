@@ -1,150 +1,172 @@
-# ACLEDA University Document & Meeting Management AI
+# ACLEDA University Document & Meeting Workflow
 
-An AI-assisted document and meeting management system integrating a pluggable generative LLM (**local Ollama Qwen2.5 by default**, optional **Google Gemini** or **OpenCode**), a real local **Khmer ASR (Khmer ASR SOTA ONNX)** and **faster-whisper** English speech engine, plus FastAPI-backed document and meeting records. Summaries and live transcripts are produced only when the corresponding model/API is available; the web app never falls back to fabricated records.
+An AI-assisted document and meeting management system for **ACLEDA University of Business (AUB)**, Faculty of Science & Technology.
 
-Developed for **ACLEDA University of Business (AUB)**, Faculty of Science & Technology, Major in Computer Science and Engineering.
+The app turns a meeting recording or transcript into reviewed, published minutes. Published minutes are archived in the document repository, and their action items and decisions become trackable follow-ups.
 
----
-
-## 🎨 UI System
-
-The web application now uses **shadcn-vue** components on Tailwind CSS with a restrained institutional palette:
-
-* **Canvas — Stone (`#F4F3F0`):** low-chroma working surface across the shell and pages.
-* **Structure — Ink (`#231F1C`):** near-black type, primary actions and table structure.
-* **Accent — Bordeaux (`#7A1F35`):** reserved for live state, selected data and the single brand mark.
-* **Typography:** Instrument Sans for the interface and Noto Sans Khmer for bilingual meeting transcripts.
-* **Motion:** functional feedback only — count-up metrics, a live audio wave and animated transcript rows. No decorative gradients or page-load animation.
-
-The interface uses the shadcn-vue component primitives (Button, Card, Badge, Dialog, Sheet, Input, Table, Tabs) and a small local motion layer.
+Live meeting capture is intentionally **not** part of this build. Meeting content is added as a recording, a direct file link, or a transcript.
 
 ---
 
-## 🏗️ Monorepo Architecture
+## Architecture
 
 ```
-doc-management-meeting-workflow/
-├── backend/                  # FastAPI 0.110+ Gateway, SQLAlchemy 2.0, Pydantic v2
-│   ├── app/
-│   │   ├── api/v1/           # Auth, Dashboard, Documents, Meetings, local exports
-│   │   ├── models/           # PostgreSQL ERD (Users, Docs, Meetings, Summaries)
-│   │   ├── services/         # Text extractors, LLM providers, DOCX/CSV minutes exports
-│   │   └── websockets/       # 16kHz PCM Audio Ingress & Live Transcript Hub
-│   ├── tests/                # Automated Pytest suite (100% pass rate)
-│   └── Dockerfile
-├── frontend/                 # Nuxt 3 (Vue 3, shadcn-vue, Tailwind CSS)
-│   ├── layouts/default.vue   # Open-plane shell with collapsible mobile navigation
-│   ├── pages/index.vue       # Overview: live meeting, readiness, metrics, attention
-│   ├── pages/documents.vue   # Searchable repository, document dialog and upload flow
-│   ├── pages/meetings/       # Meeting list, live bilingual console, MoM review editor
-│   ├── components/ui/        # shadcn-vue primitives
-│   ├── components/motion/    # Count-up, live audio wave and status helpers
-│   ├── tests/e2e/            # Playwright coverage for all screens, modals and mobile nav
-│   ├── playwright.config.ts
-│   └── tailwind.config.ts    # Stone, ink and bordeaux design tokens
-├── extension/                # WXT Chrome Extension (Manifest V3, WebRTC tabCapture)
-│   ├── entrypoints/
-│   │   ├── background.ts     # Tab audio capture & WebSocket streaming
-│   │   └── popup/            # Popup controller with live telemetry
-│   └── wxt.config.ts
-├── speech-service/           # On-Premise local speech node (Khmer SOTA + faster-whisper)
-│   ├── engine/               # WebRTC VAD, local ASR, English translation
-│   └── service.py            # Local FastAPI inference microservice
-├── docker-compose.yml        # Orchestration (Postgres 16, Redis 7.2, Backend, Speech Node)
-└── README.md
+backend/          FastAPI, SQLAlchemy 2.0, Pydantic v2
+  api/v1/         auth, dashboard, documents, meetings, tasks, workspace exports
+  models/         users, departments, documents, meetings, transcripts, summaries, tasks
+  services/       transcript parser, transcription jobs, minutes archive, LLM, exports
+  tests/          pytest suite
+frontend/         Nuxt 3, Vue 3, shadcn-vue, Tailwind CSS
+speech-service/   Local batch Khmer/English ASR and optional translation
+docker-compose.yml
 ```
+
+## Input paths
+
+| Source | What happens |
+|---|---|
+| Upload a recording (`.mp3`, `.m4a`, `.wav`, `.mp4`, `.webm`, `.ogg`, `.aac`, `.flac`, `.mov`) | Saved locally, then transcribed in the background by the on-premise speech service |
+| Paste a direct link | Downloaded with size and SSRF checks, then transcribed or parsed |
+| Upload or paste a transcript (`.txt`, `.vtt`, `.srt`, `.docx`) | Parsed deterministically into speaker segments |
+| Type the minutes | Fully manual, no AI required |
+
+## Meeting workflow
+
+1. Create a meeting and add an agenda.
+2. Open the meeting and choose **Add content**.
+3. Add a recording, link, or transcript.
+4. Correct the transcript where needed, including speaker names.
+5. Optionally generate an AI draft, or write the minutes directly.
+6. Publish. This single action:
+   - verifies the minutes
+   - writes the official DOCX and action-item CSV
+   - archives a copy in **Documents** under *Minutes of Meeting*
+   - activates the action items and decisions in **Tasks**
+
+## Pages
+
+- **Overview** — next meeting, open/overdue tasks, recent documents
+- **Meetings** — create meetings, add content, review and publish minutes
+- **Documents** — repository, uploads, search, archived minutes
+- **Tasks** — action items with status tracking and a read-only decision log
 
 ---
 
-## 🚀 Quick Start Guide
+## Quick start
 
-### 1. Prerequisites
-* Python 3.11+
-* Node.js v20+ / npm v10+
-* Docker & Docker Compose (optional for production containers)
+### 1. Backend
 
-### 2. Backend Gateway Setup
 ```bash
 cd backend
-python -m venv .venv
-# On Windows PowerShell:
-.venv\Scripts\activate
-# On Linux/macOS:
+python3.12 -m venv .venv
 source .venv/bin/activate
-
 pip install -r requirements.txt
-
-# Run automated tests
-pytest tests -v
-
-# Start FastAPI server
 uvicorn app.main:app --reload --port 8000
 ```
-* **API Documentation (Scalar):** `http://localhost:8000/docs`
-* **Default Admin Account:** `admin@aub.edu.kh` / `Admin@AUB2026`
 
-### Data and integration conditions
+- API reference: `http://localhost:8000/docs`
+- Default administrator: `admin@aub.edu.kh` / `Admin@AUB2026`
+- SQLite is used by default (`backend/aub_workflow.db`). Set `DATABASE_URL` for PostgreSQL.
 
-* The web app uses the FastAPI API for every screen; there is no hardcoded demo dataset. A fresh database shows empty states until records are created.
-* Login is required. The seeded administrator is the development account above.
-* **Creating a meeting is optional-input:** the title can be left blank and is auto-named from your department. The meeting starts now, runs for 30 minutes, and the department comes from your account. Description and agenda live under **optional details**.
-* Generative AI is provider-agnostic: `LLM_PROVIDER=auto|gemini|ollama|opencode`. `auto` uses Gemini when `GEMINI_API_KEY` is set, otherwise the local Ollama model. The default free setup is **Ollama + Qwen2.5 7B**:
-  ```bash
-  brew install ollama
-  ollama serve
-  ollama pull qwen2.5:7b
-  ```
-* Document summaries are generated on demand with **Generate summary**, so uploads stay fast. Set `AUTO_SUMMARIZE_ON_UPLOAD=true` to summarize during upload.
-* To use Gemini instead, set `GEMINI_API_KEY` and optionally `GEMINI_MODEL`. To use OpenCode, set `LLM_PROVIDER=opencode`, `OPENCODE_API_KEY` and `OPENCODE_MODEL` (the account needs credit or a Go subscription).
-* If the selected provider is unreachable or refuses the request, the API returns `503` with an actionable message and the UI shows it; it never invents a summary.
-* Live transcription uses the local speech service at `http://localhost:8001`. Khmer audio is recognized by the local **Khmer ASR SOTA** ONNX model; English audio uses **faster-whisper** (`base` by default). The extension popup offers **Spoken language: Auto / Khmer / English**; choose **Khmer** to force the Khmer model when auto-detection misclassifies short chunks. Khmer-to-English translation uses MyMemory as the working fallback (text leaves the machine for translation); a local Netra-NMT model can replace it later. Silence and noise are removed with WebRTC VAD before ASR, so silent chunks do not produce hallucinated text. The models are downloaded on first inference and cached locally. If a model cannot load, the live console reports that transcription is unavailable rather than showing canned text.
-* Verified minutes are exported locally as DOCX and CSV. Gmail delivery is not configured in this deployment and returns `503` rather than a simulated success.
+### 2. Speech service (Khmer ASR)
 
-### Recording a real Google Meet
+```bash
+cd speech-service
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+# ffmpeg must be installed (macOS: brew install ffmpeg)
+uvicorn service:app --port 8001
+```
 
-1. Start the backend, speech service and frontend.
-2. Create a meeting in the web app and click **Open console → Start session**.
-3. Click **Copy meeting ID** in the live console. The extension validates the ID against the API and displays the meeting title and status.
-4. Switch to the Google Meet tab, click the **AUB Meeting Ingress** extension icon there (this grants tab-capture permission for that tab), paste the meeting ID, choose the **Spoken language** for your microphone, and click **Start capture**. Allow microphone access when Chrome asks. The popup refuses to start unless it shows the same meeting title and **In Progress** status as the live console. Participant audio from the Meet tab is auto-detected separately.
-5. The extension captures your **microphone** and the Meet tab as **two separate streams** — Google Meet does not loop your own voice into the tab, so the microphone is required for your speech. Each stream is converted to 16 kHz mono PCM and sent in 10-second chunks. Your voice is labeled **You** and remote participants **Participants**, so the two voices are never mixed together.
-6. The popup shows whether the sources are **Tab + microphone**, and the live console shows **Receiving audio · chunk N** with the audio level. The backend forwards each chunk to the speech service, persists the segment with its **You/Participants** label, and broadcasts it over `/ws/live-transcript/{meeting_id}`. Silent chunks are skipped and reported instead of shown as empty rows.
-7. For the cleanest transcript, use **headphones**: the microphone then hears only your voice and does not pick up the Meet tab audio.
-7. Click **Stop capture**, then **End & generate MoM** to review the persisted transcript. Drafts are generated by the configured LLM provider (local Ollama by default); otherwise enter the minutes manually and approve/export.
+For better Khmer accuracy, create `speech-service/.env` from `.env.example` and add a Google AI Studio key:
 
-### 3. Frontend Web Application Setup
+```bash
+cd speech-service
+cp .env.example .env
+# edit .env and set GEMINI_API_KEY=...
+```
+
+With a key configured, Khmer segments are transcribed by Google's `gemini-3.5-transcribe` model, which is materially more accurate on Khmer script than the local CTC model. Without a key, the local Khmer ASR model is used instead. English always uses local faster-whisper.
+
+- Khmer audio is sent to Google only when `GEMINI_API_KEY` is set.
+- The local Khmer/English models download on first use and are cached.
+- Khmer-to-English translation uses MyMemory and can be disabled with `translate=false`; the app requests translation so the optional MoM draft can use English text.
+- If port 8001 is already in use, run the speech service on another port and set `SPEECH_SERVICE_URL` for the backend, e.g. `SPEECH_SERVICE_URL=http://127.0.0.1:8002`.
+
+### 3. Frontend
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-* **Web Portal:** `http://localhost:3000`
 
-### 4. Chrome Audio Ingress Extension Setup
+Web app: `http://localhost:3000`
+
+### 4. Docker
+
 ```bash
-cd extension
-npm install
-npm run build
+docker compose up --build
 ```
-* In Google Chrome, navigate to `chrome://extensions/`.
-* Enable **Developer mode** (top right).
-* Click **Load unpacked** and select `AUB-Meeting-Extension`.
 
-### 5. End-to-End Tests
-```bash
-cd frontend
-npm run test:e2e
-```
-The Playwright suite runs against the real FastAPI API. It logs in with the seeded administrator, creates real records through the API, and covers every screen, all modal close paths (X, Cancel, Done, Escape), dark/blurred overlays, document and meeting creation, live transcript updates, minutes approval, downloads and mobile navigation. The backend must be running at `http://localhost:8000`, and Google Chrome must be installed because the config uses Playwright's `chrome` channel. The suite creates records named `E2E …` in the development database.
-
-* **Headed run:** `npm run test:e2e:headed`
-* **HTML report:** `npm run test:e2e:report`
+This starts PostgreSQL, the speech service, and the backend. The GPU speech image already includes ffmpeg.
 
 ---
 
-## 📊 Empirical Benchmarks (DSRM Phase 5)
+## Optional AI minutes draft
 
-* **Minutes of Meeting Turnaround:** Reduced from 245.0 min to 27.75 min (**88.7% reduction**, $p < 0.001$).
-* **Khmer-English Code-Switching ASR:** **16.4% WER** (61.7% relative improvement over Whisper Large v3).
-* **Document FTS Retrieval:** Reduced from 18.4 min to **8.6 seconds** (**99.2% speedup**).
-* **System Usability Scale (SUS):** **84.2 / 100** (**Grade A "Excellent"**, 96th percentile, $N=40$).
-* **End-to-End Live Latency:** **1.48 seconds** (satisfying sub-3-second streaming threshold).
+The transcript and manual editor work without any model. **Generate draft** is optional and provider-agnostic:
+
+```bash
+LLM_PROVIDER=auto|gemini|ollama|opencode
+GEMINI_API_KEY=...
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:7b
+OPENCODE_API_KEY=...
+```
+
+If the provider is unavailable, the API returns an actionable error and the UI shows it; no draft is invented.
+
+The AI output is always a draft. Only the version a human reviews and publishes becomes official.
+
+## Correctness and privacy
+
+- Transcript parsing, archiving, task tracking, overdue calculation and exports are deterministic.
+- Transcription is probabilistic. The project's locally evaluated Khmer model reports **16.4% WER** on Khmer-English code-switching, and Google transcription can still mishear words. The review step exists because recognition is not perfect.
+- English ASR and the local Khmer fallback run on campus. When `GEMINI_API_KEY` is configured, Khmer audio is sent to Google for transcription; Khmer-to-English translation uses MyMemory.
+- Published minutes are the only source for the document archive, action items and decisions.
+
+## Tests
+
+```bash
+cd backend
+.venv/bin/python -m pytest tests -q
+```
+
+```bash
+cd frontend
+npm run test:e2e        # UI and API flows; live AI/ASR tests skipped
+npm run test:e2e:live   # real Khmer + English recordings, Gemini transcription and AI drafts
+```
+
+The default Playwright suite runs against the real backend at `http://localhost:8000` and uses Chrome. The live suite additionally requires:
+
+- the speech service on `SPEECH_SERVICE_URL` (default `http://localhost:8001`)
+- `GEMINI_API_KEY` in `speech-service/.env` for Khmer transcription
+- `GEMINI_API_KEY` in `backend/.env` for AI minutes and document summaries
+- `DEMO_DIR` pointing to the demo files (default `/Users/alexkgm/Desktop/demo`)
+
+The live suite covers:
+- Khmer recording → Google transcription
+- English recording → local faster-whisper
+- AI minutes draft with source transcript
+- AI document summary
+
+## Known limitations
+
+- No live meeting bot and no Chrome extension. Recordings must be uploaded or linked.
+- Google Meet's saved transcripts support English and seven other languages, **not Khmer**. Khmer meetings need the local speech service or an external Khmer transcription tool.
+- No speaker diarization. Every ASR segment starts as “Speaker”; speaker names can be corrected in the transcript editor.
+- Long Khmer recordings on CPU can take several minutes. The job runs in the background and the page reports progress.
+- Zoom/Teams share pages are HTML pages, not direct files. Download the recording or transcript before uploading.
