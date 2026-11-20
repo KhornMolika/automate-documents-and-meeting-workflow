@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { CalendarDays, Plus } from 'lucide-vue-next'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { CalendarDays, MoreHorizontal, Plus, Search, Trash2, Pencil } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { Button } from '~/components/ui/button'
 import { Card } from '~/components/ui/card'
@@ -23,26 +23,53 @@ import StatusBadge from '~/components/workspace/StatusBadge.vue'
 import { useApi } from '~/composables/useApi'
 import { useAuth } from '~/composables/useAuth'
 import { formatDate, formatTimeRange, plural } from '~/lib/format'
-import type { Meeting } from '~/types/api'
+import type { Meeting, MeetingPage } from '~/types/api'
 
 useHead({ title: 'Meetings · ACLEDA University' })
 
+type MeetingView = 'all' | 'scheduled' | 'draft' | 'published'
+
 const api = useApi()
 const { user } = useAuth()
-const { data, pending, error, refresh } = await useAsyncData('meetings-page', () =>
-  api<Meeting[]>('/meetings', { query: { limit: 200 } }),
+const departmentName = computed(() => user.value?.department?.name ?? 'Department workspace')
+
+const page = ref(1)
+const pageSize = ref(10)
+const view = ref<MeetingView>('all')
+const search = ref('')
+const debouncedSearch = ref('')
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+const { data, pending, error, refresh } = await useAsyncData(
+  'meetings-page',
+  () => api<MeetingPage>('/meetings', {
+    query: {
+      page: page.value,
+      page_size: pageSize.value,
+      view: view.value,
+      q: debouncedSearch.value || undefined,
+    },
+  }),
+  { watch: [page, pageSize, view, debouncedSearch] },
 )
 
-const meetingList = computed(() => data.value ?? [])
-const departmentName = computed(() => user.value?.department?.name ?? 'Department workspace')
-const activeFilter = ref<'all' | 'scheduled' | 'draft' | 'published'>('all')
-const newMeetingOpen = ref(false)
-const saving = ref(false)
-const showMore = ref(false)
-const meetingForm = ref({
-  title: '',
-  description: '',
-  agenda: '',
+const meetingList = computed(() => data.value?.items ?? [])
+const total = computed(() => data.value?.total ?? 0)
+const pages = computed(() => data.value?.pages ?? 1)
+const counts = computed(() => data.value?.counts ?? { all: 0, scheduled: 0, draft: 0, published: 0 })
+const rangeStart = computed(() => total.value ? (page.value - 1) * pageSize.value + 1 : 0)
+const rangeEnd = computed(() => Math.min(page.value * pageSize.value, total.value))
+
+watch(search, (value) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    debouncedSearch.value = value.trim()
+    page.value = 1
+  }, 300)
+})
+
+watch([view, pageSize], () => {
+  page.value = 1
 })
 
 function stateOf(meeting: Meeting) {
@@ -57,6 +84,22 @@ function actionLabel(meeting: Meeting) {
   if (state === 'Draft') return 'Continue minutes'
   return 'Open workspace'
 }
+
+const filters = computed(() => [
+  { value: 'all' as const, label: 'All', count: counts.value.all ?? 0 },
+  { value: 'scheduled' as const, label: 'Scheduled', count: counts.value.scheduled ?? 0 },
+  { value: 'draft' as const, label: 'Draft', count: counts.value.draft ?? 0 },
+  { value: 'published' as const, label: 'Published', count: counts.value.published ?? 0 },
+])
+
+const newMeetingOpen = ref(false)
+const saving = ref(false)
+const showMore = ref(false)
+const meetingForm = ref({
+  title: '',
+  description: '',
+  agenda: '',
+})
 
 function resetMeetingForm() {
   meetingForm.value = {
@@ -73,31 +116,6 @@ watch(newMeetingOpen, (open) => {
   if (open) resetMeetingForm()
 })
 
-const filters = computed(() => [
-  { value: 'all' as const, label: 'All', count: meetingList.value.length },
-  {
-    value: 'scheduled' as const,
-    label: 'Scheduled',
-    count: meetingList.value.filter(meeting => stateOf(meeting) === 'Scheduled').length,
-  },
-  {
-    value: 'draft' as const,
-    label: 'Draft',
-    count: meetingList.value.filter(meeting => stateOf(meeting) === 'Draft').length,
-  },
-  {
-    value: 'published' as const,
-    label: 'Published',
-    count: meetingList.value.filter(meeting => stateOf(meeting) === 'Published').length,
-  },
-])
-
-const filteredMeetings = computed(() => {
-  if (activeFilter.value === 'all') return meetingList.value
-  const label = activeFilter.value.charAt(0).toUpperCase() + activeFilter.value.slice(1)
-  return meetingList.value.filter(meeting => stateOf(meeting) === label)
-})
-
 async function addMeeting() {
   const departmentId = user.value?.department_id
   if (!departmentId) {
@@ -110,7 +128,7 @@ async function addMeeting() {
 
   saving.value = true
   try {
-    await api('/meetings', {
+    const created = await api<Meeting>('/meetings', {
       method: 'POST',
       body: {
         title,
@@ -130,10 +148,10 @@ async function addMeeting() {
           })),
       },
     })
-    await refresh()
     newMeetingOpen.value = false
     resetMeetingForm()
     toast.success('Meeting created.')
+    await navigateTo(`/meetings/${created.id}/review`)
   } catch (err: any) {
     toast.error(err?.data?.detail ?? 'Could not create the meeting.')
   } finally {
@@ -141,9 +159,90 @@ async function addMeeting() {
   }
 }
 
-function reviewLink(meetingId: string) {
-  return `/meetings/${meetingId}/review`
+const openMenuId = ref('')
+const renameOpen = ref(false)
+const renameTarget = ref<Meeting | null>(null)
+const renameTitle = ref('')
+const renaming = ref(false)
+const deleteOpen = ref(false)
+const deleteTarget = ref<Meeting | null>(null)
+const deleting = ref(false)
+
+function toggleMenu(meetingId: string) {
+  openMenuId.value = openMenuId.value === meetingId ? '' : meetingId
 }
+
+function closeMenu() {
+  openMenuId.value = ''
+}
+
+function openRename(meeting: Meeting) {
+  closeMenu()
+  renameTarget.value = meeting
+  renameTitle.value = meeting.title
+  renameOpen.value = true
+}
+
+async function renameMeeting() {
+  const meeting = renameTarget.value
+  const title = renameTitle.value.trim()
+  if (!meeting || !title) {
+    toast.error('Enter a meeting title.')
+    return
+  }
+  renaming.value = true
+  try {
+    await api(`/meetings/${meeting.id}`, {
+      method: 'PATCH',
+      body: { title },
+    })
+    renameOpen.value = false
+    renameTarget.value = null
+    await refresh()
+    toast.success('Meeting renamed.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not rename the meeting.')
+  } finally {
+    renaming.value = false
+  }
+}
+
+function openDelete(meeting: Meeting) {
+  closeMenu()
+  deleteTarget.value = meeting
+  deleteOpen.value = true
+}
+
+async function deleteMeeting() {
+  const meeting = deleteTarget.value
+  if (!meeting) return
+  deleting.value = true
+  try {
+    await api(`/meetings/${meeting.id}`, { method: 'DELETE' })
+    deleteOpen.value = false
+    deleteTarget.value = null
+    if (meetingList.value.length === 1 && page.value > 1) {
+      page.value -= 1
+    } else {
+      await refresh()
+    }
+    toast.success('Meeting deleted.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not delete the meeting.')
+  } finally {
+    deleting.value = false
+  }
+}
+
+function goToPage(next: number) {
+  page.value = Math.min(Math.max(1, next), pages.value)
+}
+
+onMounted(() => document.addEventListener('click', closeMenu))
+onUnmounted(() => {
+  document.removeEventListener('click', closeMenu)
+  if (searchTimer) clearTimeout(searchTimer)
+})
 </script>
 
 <template>
@@ -160,34 +259,62 @@ function reviewLink(meetingId: string) {
       </template>
     </PageHeader>
 
-    <LoadingState v-if="pending" class="mt-6" />
+    <LoadingState v-if="pending && !data" class="mt-6" />
     <ErrorState v-else-if="error" class="mt-6" :message="error.message" @retry="refresh" />
 
     <template v-else>
-      <div class="mt-6 flex flex-wrap items-end justify-between gap-3 border-b">
+      <div class="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div class="relative min-w-0 flex-1">
+          <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            v-model="search"
+            type="search"
+            placeholder="Search meetings"
+            aria-label="Search meetings"
+            class="pl-9"
+          />
+        </div>
+        <div class="flex items-center gap-2">
+          <label for="meetings-page-size" class="text-[13px] text-muted-foreground">Rows</label>
+          <select
+            id="meetings-page-size"
+            v-model.number="pageSize"
+            class="h-9 rounded-md border border-input bg-card px-3 text-sm text-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+          >
+            <option :value="10">10</option>
+            <option :value="20">20</option>
+            <option :value="50">50</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="mt-4 flex flex-wrap items-end justify-between gap-3 border-b">
         <div class="no-scrollbar flex items-center gap-1 overflow-x-auto" role="tablist" aria-label="Filter meetings">
           <button
             v-for="filter in filters"
             :key="filter.value"
             role="tab"
-            :aria-selected="activeFilter === filter.value"
+            :aria-selected="view === filter.value"
             class="relative inline-flex h-9 items-center gap-1.5 px-3 text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground"
             :class="
-              activeFilter === filter.value
+              view === filter.value
                 ? 'text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-brand after:content-[\'\']'
                 : ''
             "
-            @click="activeFilter = filter.value"
+            @click="view = filter.value"
           >
             {{ filter.label }}
             <span class="tabular-nums text-[13px] text-muted-foreground">{{ filter.count }}</span>
           </button>
         </div>
+        <p v-if="total" class="pb-2 text-[13px] text-muted-foreground">
+          {{ total }} {{ total === 1 ? 'meeting' : 'meetings' }}
+        </p>
       </div>
 
-      <Card v-if="filteredMeetings.length" class="mt-4 overflow-hidden" data-testid="meeting-list">
+      <Card v-if="meetingList.length" class="mt-4 overflow-visible" data-testid="meeting-list">
         <div
-          v-for="meeting in filteredMeetings"
+          v-for="meeting in meetingList"
           :key="meeting.id"
           class="flex flex-col gap-3 border-b px-5 py-4 last:border-b-0 sm:flex-row sm:items-center"
           data-testid="meeting-row"
@@ -215,24 +342,66 @@ function reviewLink(meetingId: string) {
 
           <div class="flex shrink-0 items-center gap-2">
             <Button as-child size="sm" variant="outline">
-              <NuxtLink :to="reviewLink(meeting.id)">{{ actionLabel(meeting) }}</NuxtLink>
+              <NuxtLink :to="`/meetings/${meeting.id}/review`">{{ actionLabel(meeting) }}</NuxtLink>
             </Button>
+            <div class="relative" @click.stop>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                :aria-label="`Actions for ${meeting.title}`"
+                :aria-expanded="openMenuId === meeting.id"
+                @click="toggleMenu(meeting.id)"
+              >
+                <MoreHorizontal class="h-4 w-4" />
+              </Button>
+              <div
+                v-if="openMenuId === meeting.id"
+                class="absolute right-0 top-full z-30 mt-1 w-40 rounded-md border bg-card p-1 shadow-lg"
+                role="menu"
+              >
+                <button
+                  type="button"
+                  class="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-secondary"
+                  role="menuitem"
+                  @click="openRename(meeting)"
+                >
+                  <Pencil class="h-3.5 w-3.5" />
+                  Rename
+                </button>
+                <button
+                  type="button"
+                  class="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-[13px] text-negative transition-colors hover:bg-negative-soft"
+                  role="menuitem"
+                  @click="openDelete(meeting)"
+                >
+                  <Trash2 class="h-3.5 w-3.5" />
+                  Delete
+                </button>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="flex items-center justify-between px-5 py-3 text-[13px] text-muted-foreground">
-          <span>{{ filteredMeetings.length }} of {{ plural(meetingList.length, 'meeting') }}</span>
-          <span class="flex items-center gap-1.5">
-            <CalendarDays class="h-3.5 w-3.5" />
-            {{ departmentName }}
-          </span>
+
+        <div class="flex flex-col gap-3 border-t px-5 py-3 text-[13px] text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+          <span>Showing {{ rangeStart }}–{{ rangeEnd }} of {{ total }}</span>
+          <div class="flex items-center gap-1.5">
+            <span class="mr-1">{{ departmentName }}</span>
+            <Button variant="outline" size="sm" :disabled="page <= 1" @click="goToPage(page - 1)">
+              Previous
+            </Button>
+            <span class="px-2 tabular-nums">{{ page }} / {{ pages }}</span>
+            <Button variant="outline" size="sm" :disabled="page >= pages" @click="goToPage(page + 1)">
+              Next
+            </Button>
+          </div>
         </div>
       </Card>
 
       <EmptyState
         v-else
         class="mt-4"
-        :title="meetingList.length ? 'No meetings in this view' : 'No meetings yet'"
-        :description="meetingList.length ? 'Switch the filter to see the other meetings.' : 'Create the first meeting, then add a recording or transcript.'"
+        :title="total ? 'No meetings on this page' : search || view !== 'all' ? 'No meetings match this view' : 'No meetings yet'"
+        :description="total ? 'Go back to the previous page.' : search || view !== 'all' ? 'Clear the search or switch the filter.' : 'Create the first meeting, then add a recording or transcript.'"
       >
         <Button variant="outline" size="sm" class="mt-3" @click="newMeetingOpen = true">
           <Plus class="h-4 w-4" />
@@ -286,6 +455,45 @@ function reviewLink(meetingId: string) {
           <Button variant="outline" :disabled="saving" @click="newMeetingOpen = false">Cancel</Button>
           <Button :disabled="saving" @click="addMeeting">
             {{ saving ? 'Creating…' : 'Create meeting' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="renameOpen">
+      <DialogContent class="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Rename meeting</DialogTitle>
+          <DialogDescription>This title appears in the workspace, minutes and document archive.</DialogDescription>
+        </DialogHeader>
+        <div class="space-y-1.5">
+          <Label for="rename-meeting-title">Title</Label>
+          <Input id="rename-meeting-title" v-model="renameTitle" @keyup.enter="renameMeeting" />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" :disabled="renaming" @click="renameOpen = false">Cancel</Button>
+          <Button :disabled="renaming || !renameTitle.trim()" @click="renameMeeting">
+            {{ renaming ? 'Saving…' : 'Save name' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="deleteOpen">
+      <DialogContent class="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Delete this meeting?</DialogTitle>
+          <DialogDescription>
+            This permanently removes the meeting, its transcript, minutes, action items and archived document copy. This cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        <div class="rounded-md border border-negative/20 bg-negative-soft px-3 py-2.5 text-[13px] text-negative">
+          {{ deleteTarget?.title }}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" :disabled="deleting" @click="deleteOpen = false">Cancel</Button>
+          <Button variant="destructive" :disabled="deleting" @click="deleteMeeting">
+            {{ deleting ? 'Deleting…' : 'Delete meeting' }}
           </Button>
         </DialogFooter>
       </DialogContent>

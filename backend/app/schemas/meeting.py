@@ -123,6 +123,22 @@ class MeetingOut(BaseModel):
     summary: Optional[MeetingSummaryOut] = None
 
 
+class MeetingPage(BaseModel):
+    items: List[MeetingOut]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+    counts: dict[str, int]
+
+
+class MeetingUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    scheduled_start: Optional[datetime] = None
+    scheduled_end: Optional[datetime] = None
+
+
 class MoMApprovalInput(BaseModel):
     executive_summary: str
     discussion_points: List[str]

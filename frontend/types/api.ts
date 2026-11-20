@@ -122,6 +122,15 @@ export interface Meeting {
   summary?: MeetingSummary | null
 }
 
+export interface MeetingPage {
+  items: Meeting[]
+  total: number
+  page: number
+  page_size: number
+  pages: number
+  counts: Record<string, number>
+}
+
 export interface TranscriptSegment {
   id: string
   speaker_label: string

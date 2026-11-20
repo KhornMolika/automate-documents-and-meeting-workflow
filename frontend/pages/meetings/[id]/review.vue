@@ -69,6 +69,7 @@ const mom = reactive({
 const isVerified = ref(false)
 const generated = ref(false)
 const generating = ref(false)
+const generatingSeconds = ref(0)
 const saving = ref(false)
 const publishing = ref(false)
 const approveOpen = ref(false)
@@ -91,6 +92,19 @@ const submitting = ref(false)
 const inputError = ref('')
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let generateTimer: ReturnType<typeof setInterval> | null = null
+
+watch(generating, (active) => {
+  if (generateTimer) {
+    clearInterval(generateTimer)
+    generateTimer = null
+  }
+  generatingSeconds.value = 0
+  if (!active) return
+  generateTimer = setInterval(() => {
+    generatingSeconds.value += 1
+  }, 1000)
+})
 
 const isProcessing = computed(() => {
   const status = transcription.value?.status
@@ -476,7 +490,10 @@ onMounted(() => {
   if (isProcessing.value) startPolling()
 })
 
-onUnmounted(stopPolling)
+onUnmounted(() => {
+  stopPolling()
+  if (generateTimer) clearInterval(generateTimer)
+})
 </script>
 
 <template>
@@ -672,8 +689,8 @@ onUnmounted(stopPolling)
                 <span v-if="generating" class="h-3 w-3 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
                 {{ generating ? 'Generating…' : 'Generate draft from transcript' }}
               </Button>
-              <p v-if="generating" class="mt-2 text-[12px] text-muted-foreground">
-                Gemini is drafting the minutes. This usually takes a few seconds, but can take up to two minutes.
+              <p v-if="generating" class="mt-2 text-[12px] text-muted-foreground" role="status">
+                Gemini is drafting the minutes · {{ generatingSeconds }}s
               </p>
             </div>
 

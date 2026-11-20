@@ -318,3 +318,32 @@ async def test_document_and_meeting_lifecycle(client: AsyncClient, db_session: A
     assert dashboard["open_action_items_count"] == 0
     assert dashboard["overdue_action_items_count"] == 0
     assert "live_meeting" not in dashboard
+
+    page_res = await client.get(
+        "/api/v1/meetings?page=1&page_size=10&view=published", headers=headers
+    )
+    assert page_res.status_code == 200
+    page_data = page_res.json()
+    assert page_data["items"][0]["id"] == meeting_id
+    assert page_data["total"] == 1
+    assert page_data["counts"]["published"] == 1
+    assert page_data["pages"] == 1
+
+    rename_res = await client.patch(
+        f"/api/v1/meetings/{meeting_id}",
+        json={"title": "Renamed Faculty Board Review"},
+        headers=headers,
+    )
+    assert rename_res.status_code == 200
+    assert rename_res.json()["title"] == "Renamed Faculty Board Review"
+
+    delete_res = await client.delete(f"/api/v1/meetings/{meeting_id}", headers=headers)
+    assert delete_res.status_code == 204
+    missing_res = await client.get(f"/api/v1/meetings/{meeting_id}", headers=headers)
+    assert missing_res.status_code == 404
+
+    search_after_delete = await client.get("/api/v1/documents/search?q=Minutes", headers=headers)
+    assert all(
+        document["drive_file_id"] != meeting_id
+        for document in search_after_delete.json()["items"]
+    )

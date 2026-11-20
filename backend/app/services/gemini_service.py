@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -16,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 class AIServiceUnavailable(RuntimeError):
     """Raised when Gemini is not configured or cannot return a usable response."""
+
+
+_RESPONSE_CACHE: dict[str, tuple[float, Dict[str, Any]]] = {}
+_CACHE_TTL_SECONDS = 600
 
 
 def _parse_json_response(raw: str) -> Dict[str, Any]:
@@ -66,6 +71,15 @@ class GeminiService:
         if not self.api_key:
             raise AIServiceUnavailable("GEMINI_API_KEY is not configured.")
 
+        cache_key = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        now = time.monotonic()
+        cached = _RESPONSE_CACHE.get(cache_key)
+        if cached and now - cached[0] < _CACHE_TTL_SECONDS:
+            return cached[1]
+        for key, (stored_at, _) in list(_RESPONSE_CACHE.items()):
+            if now - stored_at >= _CACHE_TTL_SECONDS:
+                _RESPONSE_CACHE.pop(key, None)
+
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
@@ -84,6 +98,7 @@ class GeminiService:
                     raise AIServiceUnavailable(
                         f"Gemini took longer than {self.total_timeout}s. Try again in a moment."
                     )
+                logger.info("Gemini request model=%s attempt=%d", model, attempt + 1)
                 try:
                     async with httpx.AsyncClient(timeout=min(self.timeout, remaining)) as client:
                         response = await client.post(
@@ -131,7 +146,9 @@ class GeminiService:
                             if part.get("text"):
                                 text_parts.append(part["text"])
                     raw = "".join(text_parts)
-                    return _parse_json_response(raw)
+                    data = _parse_json_response(raw)
+                    _RESPONSE_CACHE[cache_key] = (time.monotonic(), data)
+                    return data
                 except Exception as exc:
                     last_error = f"Gemini ({model}) returned an invalid response: {exc}"
                     logger.error(last_error)

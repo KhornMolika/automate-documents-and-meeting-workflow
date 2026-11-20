@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
-from typing import Any, List, Optional
+from pathlib import Path
+from typing import Any, List, Literal, Optional
 
 from fastapi import (
     APIRouter,
@@ -9,15 +10,18 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
+    Response,
     UploadFile,
 )
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
+from app.models.document import Document
 from app.models.meeting import (
     ActionItem,
     Decision,
@@ -32,7 +36,9 @@ from app.models.user import User
 from app.schemas.meeting import (
     MeetingCreate,
     MeetingOut,
+    MeetingPage,
     MeetingSummaryOut,
+    MeetingUpdate,
     MinutesOfMeetingSchema,
     MoMApprovalInput,
     MoMDraftInput,
@@ -66,6 +72,20 @@ def _meeting_options():
         selectinload(Meeting.summary).selectinload(MeetingSummary.decisions),
         selectinload(Meeting.summary).selectinload(MeetingSummary.action_items),
     )
+
+
+def _can_manage_meeting(meeting: Meeting, current_user: User) -> bool:
+    if current_user.is_superuser:
+        return True
+    if not current_user.department_id:
+        return True
+    return meeting.department_id == current_user.department_id
+
+
+def _remove_export_files(meeting_id: str) -> None:
+    export_dir = Path("./exports")
+    for filename in (f"mom_{meeting_id}.docx", f"action_items_{meeting_id}.csv"):
+        (export_dir / filename).unlink(missing_ok=True)
 
 
 @router.post("", response_model=MeetingOut)
@@ -111,28 +131,62 @@ async def create_meeting(
     return (await db.execute(stmt)).scalar_one()
 
 
-@router.get("", response_model=List[MeetingOut])
+@router.get("", response_model=MeetingPage)
 async def list_meetings(
-    department_id: Optional[str] = None,
-    status_filter: Optional[str] = None,
-    skip: int = 0,
-    limit: int = 50,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=50),
+    view: Literal["all", "scheduled", "draft", "published"] = "all",
+    q: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    stmt = (
-        select(Meeting)
-        .options(*_meeting_options())
-        .order_by(desc(Meeting.scheduled_start))
-        .offset(skip)
-        .limit(limit)
-    )
-    if department_id:
-        stmt = stmt.where(Meeting.department_id == department_id)
-    if status_filter:
-        stmt = stmt.where(Meeting.status == status_filter)
+    conditions = []
+    if current_user.department_id:
+        conditions.append(Meeting.department_id == current_user.department_id)
+    if q and q.strip():
+        conditions.append(Meeting.title.ilike(f"%{q.strip()}%"))
 
-    return (await db.execute(stmt)).scalars().all()
+    def with_view(statement, selected_view: str):
+        if selected_view == "scheduled":
+            return statement.where(~Meeting.summary.has())
+        if selected_view == "draft":
+            return statement.where(Meeting.summary.has(MeetingSummary.is_verified.is_(False)))
+        if selected_view == "published":
+            return statement.where(Meeting.summary.has(MeetingSummary.is_verified.is_(True)))
+        return statement
+
+    counts: dict[str, int] = {}
+    for key in ("all", "scheduled", "draft", "published"):
+        count_stmt = with_view(
+            select(func.count()).select_from(Meeting).where(*conditions),
+            key,
+        )
+        counts[key] = int(await db.scalar(count_stmt) or 0)
+
+    total = counts[view]
+    pages = max(1, (total + page_size - 1) // page_size)
+    if page > pages:
+        page = pages
+
+    stmt = with_view(
+        select(Meeting)
+        .where(*conditions)
+        .options(*_meeting_options())
+        .order_by(desc(Meeting.scheduled_start), desc(Meeting.created_at))
+        .offset((page - 1) * page_size)
+        .limit(page_size),
+        view,
+    )
+    items = (await db.execute(stmt)).scalars().all()
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": pages,
+        "counts": counts,
+    }
 
 
 @router.get("/{meeting_id}", response_model=MeetingOut)
@@ -146,6 +200,78 @@ async def get_meeting_detail(
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting session not found")
     return meeting
+
+
+@router.patch("/{meeting_id}", response_model=MeetingOut)
+async def update_meeting(
+    meeting_id: str,
+    meeting_in: MeetingUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    stmt = select(Meeting).where(Meeting.id == meeting_id).options(*_meeting_options())
+    meeting = (await db.execute(stmt)).scalar_one_or_none()
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    if not _can_manage_meeting(meeting, current_user):
+        raise HTTPException(status_code=403, detail="You cannot edit this meeting.")
+
+    if meeting_in.title is not None:
+        title = meeting_in.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Meeting title cannot be empty.")
+        meeting.title = title
+    if meeting_in.description is not None:
+        meeting.description = meeting_in.description.strip() or None
+    if meeting_in.scheduled_start is not None:
+        meeting.scheduled_start = meeting_in.scheduled_start
+    if meeting_in.scheduled_end is not None:
+        meeting.scheduled_end = meeting_in.scheduled_end
+    if meeting.scheduled_end <= meeting.scheduled_start:
+        raise HTTPException(status_code=400, detail="The meeting end must be after its start.")
+
+    await db.commit()
+    stmt = select(Meeting).where(Meeting.id == meeting_id).options(*_meeting_options())
+    return (await db.execute(stmt)).scalar_one()
+
+
+@router.delete("/{meeting_id}", status_code=204)
+async def delete_meeting(
+    meeting_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    stmt = (
+        select(Meeting)
+        .where(Meeting.id == meeting_id)
+        .options(
+            *_meeting_options(),
+            selectinload(Meeting.transcripts),
+            selectinload(Meeting.transcription_jobs),
+        )
+    )
+    meeting = (await db.execute(stmt)).scalar_one_or_none()
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    if not _can_manage_meeting(meeting, current_user):
+        raise HTTPException(status_code=403, detail="You cannot delete this meeting.")
+
+    archived_stmt = (
+        select(Document)
+        .where(Document.drive_file_id == meeting_id)
+        .options(selectinload(Document.versions))
+    )
+    for document in (await db.execute(archived_stmt)).scalars().all():
+        await db.delete(document)
+
+    for job in meeting.transcription_jobs:
+        if job.source_type == "upload" and job.source_name:
+            Path(job.source_name).unlink(missing_ok=True)
+
+    await db.delete(meeting)
+    await db.commit()
+    _remove_export_files(meeting_id)
+    return Response(status_code=204)
 
 
 @router.post("/{meeting_id}/recording", response_model=TranscriptionJobOut)
