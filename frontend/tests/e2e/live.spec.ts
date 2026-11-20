@@ -29,7 +29,8 @@ test.describe('Live services', () => {
     await dialog.getByRole('button', { name: 'Transcribe recording' }).click()
 
     await expect(dialog).toHaveCount(0)
-    await expect(page.getByText(/[\u1780-\u17FF]/).first()).toBeVisible({ timeout: 180_000 })
+    await expect(page.getByText(/សួស្តី/).first()).toBeVisible({ timeout: 180_000 })
+    await expect(page.getByText(/តារា/).first()).toBeVisible()
     await expect(page.getByText('0 segments')).toHaveCount(0)
   })
 

@@ -37,6 +37,14 @@ LANGUAGES = {"auto", "km", "en"}
 MAX_FILE_MB = int(os.getenv("MAX_SPEECH_FILE_MB", "500"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_TRANSCRIBE_MODEL = os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.5-transcribe").strip()
+GEMINI_TRANSCRIBE_FALLBACK_MODELS = [
+    model.strip()
+    for model in os.getenv(
+        "GEMINI_TRANSCRIBE_FALLBACK_MODELS", "gemini-3.5-flash-lite"
+    ).split(",")
+    if model.strip()
+]
+GEMINI_TRANSCRIBE_CHUNK_SECONDS = int(os.getenv("GEMINI_TRANSCRIBE_CHUNK_SECONDS", "120"))
 GEMINI_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "120"))
 
 
@@ -54,7 +62,9 @@ def pcm_to_wav(pcm_bytes: bytes) -> bytes:
     return buffer.getvalue()
 
 
-def transcribe_with_gemini(pcm_bytes: bytes, translate: bool) -> Dict[str, Any]:
+def transcribe_with_gemini(
+    pcm_bytes: bytes, translate: bool, model: str | None = None
+) -> Dict[str, Any]:
     """Transcribe Khmer audio with Google's Gemini transcription model.
 
     The local Khmer CTC model is fast but can produce garbled words. Gemini's
@@ -64,6 +74,7 @@ def transcribe_with_gemini(pcm_bytes: bytes, translate: bool) -> Dict[str, Any]:
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not configured.")
 
+    model = model or GEMINI_TRANSCRIBE_MODEL
     prompt = (
         "Transcribe this audio verbatim in Khmer. Return only the transcript text "
         "in Khmer script. Keep English words if they are spoken. Do not translate, "
@@ -83,14 +94,14 @@ def transcribe_with_gemini(pcm_bytes: bytes, translate: bool) -> Dict[str, Any]:
                 ]
             }
         ],
-        "generationConfig": {"temperature": 0, "maxOutputTokens": 2048},
+        "generationConfig": {"temperature": 0, "maxOutputTokens": 4096},
     }
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_TRANSCRIBE_MODEL}:generateContent"
+        f"{model}:generateContent"
     )
 
-    last_error = "Google transcription returned no text."
+    last_error = f"Google transcription ({model}) returned no text."
     for _ in range(2):
         try:
             response = requests.post(
@@ -103,7 +114,7 @@ def transcribe_with_gemini(pcm_bytes: bytes, translate: bool) -> Dict[str, Any]:
                 timeout=GEMINI_TIMEOUT_SECONDS,
             )
         except requests.RequestException as exc:
-            last_error = f"Google transcription request failed: {exc}"
+            last_error = f"Google transcription ({model}) request failed: {exc}"
             continue
 
         if response.status_code != 200:
@@ -111,7 +122,7 @@ def transcribe_with_gemini(pcm_bytes: bytes, translate: bool) -> Dict[str, Any]:
                 message = response.json().get("error", {}).get("message", response.text[:300])
             except Exception:
                 message = response.text[:300]
-            last_error = f"Google transcription error {response.status_code}: {message}"
+            last_error = f"Google transcription ({model}) error {response.status_code}: {message}"
             continue
 
         body = response.json()
@@ -122,21 +133,26 @@ def transcribe_with_gemini(pcm_bytes: bytes, translate: bool) -> Dict[str, Any]:
                     text_parts.append(part["text"])
         text = " ".join(text_parts).strip().strip('"').strip()
         if not text:
-            last_error = "Google transcription returned no text."
+            last_error = f"Google transcription ({model}) returned no text."
+            continue
+        if not has_khmer(text):
+            last_error = f"Google transcription ({model}) did not return Khmer text."
             continue
 
         translated_text = None
         if translate:
-            translation = translator.translate(text)
-            translated_text = str(translation.get("text") or "").strip() or None
+            try:
+                translation = translator.translate(text)
+                translated_text = str(translation.get("text") or "").strip() or None
+            except Exception as exc:
+                logger.warning("Khmer translation failed: %s", exc)
 
-        detected = "km" if has_khmer(text) else ("en" if text else "unknown")
         return {
             "text": text,
             "translated_text": translated_text,
-            "language_detected": detected,
+            "language_detected": "km",
             "confidence": 0.0,
-            "engine": f"google-{GEMINI_TRANSCRIBE_MODEL}",
+            "engine": f"google-{model}",
         }
 
     raise RuntimeError(last_error)
@@ -172,21 +188,78 @@ class BatchTranscriptResponse(BaseModel):
     language: str
 
 
+def transcribe_khmer_with_gemini(
+    pcm_bytes: bytes, translate: bool
+) -> tuple[List[TranscriptSegment], str]:
+    """Transcribe Khmer in bounded chunks, one Gemini request per chunk.
+
+    Sending the whole recording is both more accurate and much friendlier to the
+    free API quota than one request per VAD segment. If the primary transcription
+    model is unavailable, the configured Flash-Lite fallback is used.
+    """
+    bytes_per_second = 32000
+    chunk_size = max(1, GEMINI_TRANSCRIBE_CHUNK_SECONDS) * bytes_per_second
+    models = list(
+        dict.fromkeys(
+            model
+            for model in [GEMINI_TRANSCRIBE_MODEL, *GEMINI_TRANSCRIBE_FALLBACK_MODELS]
+            if model
+        )
+    )
+    disabled_models: set[str] = set()
+    segments: List[TranscriptSegment] = []
+    engines: set[str] = set()
+
+    for offset in range(0, len(pcm_bytes), chunk_size):
+        chunk = pcm_bytes[offset : offset + chunk_size]
+        if not chunk:
+            continue
+        start = offset / bytes_per_second
+        end = start + len(chunk) / bytes_per_second
+        result: Dict[str, Any] | None = None
+        last_error = "Google transcription returned no Khmer text."
+
+        for model in models:
+            if model in disabled_models:
+                continue
+            try:
+                result = transcribe_with_gemini(chunk, translate, model)
+                break
+            except Exception as exc:
+                disabled_models.add(model)
+                last_error = str(exc)
+                logger.warning("Gemini model %s failed; trying the next model: %s", model, exc)
+
+        if result is None:
+            raise RuntimeError(last_error)
+
+        text = str(result.get("text") or "").strip()
+        if not text:
+            continue
+        engines.add(str(result.get("engine") or "google-gemini"))
+        segments.append(
+            TranscriptSegment(
+                speaker_label="Speaker",
+                start_timestamp=round(start, 2),
+                end_timestamp=round(end, 2),
+                original_text=text,
+                translated_text=result.get("translated_text"),
+                language_detected="km",
+                confidence_score=float(result.get("confidence") or 0.0),
+            )
+        )
+
+    if not segments:
+        raise RuntimeError("Google transcription returned no Khmer text.")
+    return segments, ", ".join(sorted(engines))
+
+
 def transcribe_pcm(pcm_bytes: bytes, requested: str, translate: bool) -> Dict[str, Any]:
     normalized = normalize_pcm(pcm_bytes)
     if not normalized:
         return {"text": "", "translated_text": None, "language_detected": "unknown", "confidence": 0.0}
 
     try:
-        if requested == "km" and GEMINI_API_KEY:
-            try:
-                return transcribe_with_gemini(normalized, translate)
-            except Exception as exc:
-                logger.warning(
-                    "Gemini Khmer transcription failed; falling back to the local model: %s",
-                    exc,
-                )
-
         if requested == "km":
             result = khmer_asr.transcribe(normalized)
             text = result["text"]
@@ -281,6 +354,9 @@ def health_check():
         "khmer_model_loaded": khmer_asr.loaded,
         "gemini_transcription_configured": bool(GEMINI_API_KEY),
         "gemini_transcription_model": GEMINI_TRANSCRIBE_MODEL if GEMINI_API_KEY else None,
+        "gemini_transcription_fallbacks": (
+            GEMINI_TRANSCRIBE_FALLBACK_MODELS if GEMINI_API_KEY else []
+        ),
         "languages": sorted(LANGUAGES),
     }
 
@@ -311,6 +387,23 @@ async def transcribe_file(
 
     if not pcm:
         raise HTTPException(status_code=400, detail="No audible speech was found in the recording.")
+
+    duration_seconds = round(len(pcm) / 2 / 16000, 2)
+
+    if requested == "km" and GEMINI_API_KEY:
+        try:
+            segments, engine = transcribe_khmer_with_gemini(pcm, translate)
+            return BatchTranscriptResponse(
+                segments=segments,
+                duration_seconds=duration_seconds,
+                engine=engine,
+                language=requested,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Gemini Khmer transcription failed; falling back to the local model: %s",
+                exc,
+            )
 
     segments = segment_pcm(pcm)
     if not segments:
@@ -343,7 +436,7 @@ async def transcribe_file(
 
     return BatchTranscriptResponse(
         segments=results,
-        duration_seconds=round(len(pcm) / 2 / 16000, 2),
+        duration_seconds=duration_seconds,
         engine=", ".join(sorted(engine for engine in engines if engine)),
         language=requested,
     )

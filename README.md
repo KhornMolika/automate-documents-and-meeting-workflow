@@ -146,9 +146,10 @@ cp .env.example .env
 # edit .env and set GEMINI_API_KEY=...
 ```
 
-With a key configured, Khmer segments are transcribed by Google's `gemini-3.5-transcribe` model, which is materially more accurate on Khmer script than the local CTC model. Without a key, the local Khmer ASR model is used instead. English always uses local faster-whisper.
+With a key configured, Khmer recordings are transcribed by Google's `gemini-3.5-transcribe` model, which is materially more accurate on Khmer script than the local CTC model. If that model is rate-limited or unavailable, the service tries `gemini-3.5-flash-lite`, then falls back to the local Khmer ASR model. English always uses local faster-whisper.
 
 - Khmer audio is sent to Google only when `GEMINI_API_KEY` is set.
+- Khmer is sent in bounded chunks (120 seconds by default) rather than one request per VAD segment, which keeps the free API quota usable.
 - The local Khmer/English models download on first use and are cached.
 - Khmer-to-English translation uses MyMemory and can be disabled with `translate=false`; the app requests translation so the optional MoM draft can use English text.
 - If port 8001 is already in use, run the speech service on another port and set `SPEECH_SERVICE_URL` for the backend, e.g. `SPEECH_SERVICE_URL=http://127.0.0.1:8002`.
@@ -212,7 +213,7 @@ npm run test:e2e:live   # real Khmer + English recordings, Gemini transcription 
 The default Playwright suite runs against the real backend at `http://localhost:8000` and uses Chrome. The live suite additionally requires:
 
 - the speech service on `SPEECH_SERVICE_URL` (the local `run.sh` uses `http://127.0.0.1:8002`)
-- `GEMINI_API_KEY` in `speech-service/.env` for Khmer transcription (the service falls back to the local Khmer model if Google is unavailable)
+- `GEMINI_API_KEY` in `speech-service/.env` for Khmer transcription (the service tries the transcription model, then `gemini-3.5-flash-lite`, then the local Khmer model)
 - `GEMINI_API_KEY` in `backend/.env` for AI minutes and document summaries
 - `DEMO_DIR` pointing to the demo files (default `/Users/alexkgm/Desktop/demo`)
 
@@ -227,7 +228,7 @@ demo/documents/research-methodology-proposal.pdf
 ```
 
 The live suite covers:
-- Khmer recording → Google transcription, with local Khmer fallback
+- Khmer recording → Google transcription, with Flash-Lite and local Khmer fallbacks
 - English recording → local faster-whisper
 - AI minutes draft with source transcript
 - AI document summary
