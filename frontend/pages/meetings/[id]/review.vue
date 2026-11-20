@@ -26,6 +26,7 @@ import {
 } from '~/components/ui/dialog'
 import { Input } from '~/components/ui/input'
 import { Label } from '~/components/ui/label'
+import { Select } from '~/components/ui/select'
 import { Textarea } from '~/components/ui/textarea'
 import ErrorState from '~/components/workspace/ErrorState.vue'
 import LoadingState from '~/components/workspace/LoadingState.vue'
@@ -83,6 +84,11 @@ const savingTranscript = ref(false)
 
 const inputTab = ref('recording')
 const recordingFile = ref<File | null>(null)
+const languageOptions = [
+  { value: 'km', label: 'Khmer', description: 'Google transcription with local fallback' },
+  { value: 'en', label: 'English', description: 'Local faster-whisper model' },
+  { value: 'auto', label: 'Auto detect', description: 'Detect the spoken language' },
+]
 const recordingLanguage = ref('km')
 const linkUrl = ref('')
 const linkLanguage = ref('km')
@@ -904,15 +910,12 @@ onUnmounted(() => {
               </div>
               <div class="space-y-1.5">
                 <Label for="recording-language">Spoken language</Label>
-                <select
+                <Select
                   id="recording-language"
                   v-model="recordingLanguage"
-                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                >
-                  <option value="km">Khmer</option>
-                  <option value="en">English</option>
-                  <option value="auto">Auto detect</option>
-                </select>
+                  :options="languageOptions"
+                  aria-label="Spoken language"
+                />
               </div>
             </div>
 
@@ -932,15 +935,12 @@ onUnmounted(() => {
               </div>
               <div class="space-y-1.5">
                 <Label for="link-language">Spoken language</Label>
-                <select
+                <Select
                   id="link-language"
                   v-model="linkLanguage"
-                  class="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                >
-                  <option value="km">Khmer</option>
-                  <option value="en">English</option>
-                  <option value="auto">Auto detect</option>
-                </select>
+                  :options="languageOptions"
+                  aria-label="Spoken language"
+                />
               </div>
             </div>
 

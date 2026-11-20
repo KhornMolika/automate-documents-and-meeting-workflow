@@ -56,6 +56,10 @@ test.describe('Meetings', () => {
     await expect(page.getByText(/Showing 11.12 of 12/)).toBeVisible()
     await expect(page.getByText(/E2E Paged .* 12/)).toBeVisible()
 
+    await page.getByLabel('Rows per page').click()
+    await page.getByRole('option', { name: '20 rows' }).click()
+    await expect(page.getByText(/Showing 1.12 of 12/)).toBeVisible()
+
     await page.getByLabel('Search meetings').fill(`${prefix} 01`)
     const row = page.getByTestId('meeting-row').first()
     const originalTitle = `${prefix} 01`

@@ -2,6 +2,7 @@ import base64
 import io
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import wave
@@ -40,7 +41,8 @@ GEMINI_TRANSCRIBE_MODEL = os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.5-trans
 GEMINI_TRANSCRIBE_FALLBACK_MODELS = [
     model.strip()
     for model in os.getenv(
-        "GEMINI_TRANSCRIBE_FALLBACK_MODELS", "gemini-3.5-flash-lite"
+        "GEMINI_TRANSCRIBE_FALLBACK_MODELS",
+        "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3-flash-preview",
     ).split(",")
     if model.strip()
 ]
@@ -50,6 +52,17 @@ GEMINI_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "120"))
 
 def has_khmer(text: str) -> bool:
     return any("\u1780" <= character <= "\u17ff" for character in text)
+
+
+def normalize_khmer_text(text: str) -> str:
+    """Tidy Khmer output without changing the recognized words."""
+    text = re.sub(r"[ \t]+", " ", (text or "").strip())
+    # Khmer words are written without spaces. Keep spaces around Latin words
+    # and numbers, but remove them between Khmer characters.
+    text = re.sub(r"(?<=[\u1780-\u17FF])\s+(?=[\u1780-\u17FF])", "", text)
+    text = re.sub(r"\s*។\s*", "។", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def pcm_to_wav(pcm_bytes: bytes) -> bytes:
@@ -76,9 +89,10 @@ def transcribe_with_gemini(
 
     model = model or GEMINI_TRANSCRIBE_MODEL
     prompt = (
-        "Transcribe this audio verbatim in Khmer. Return only the transcript text "
-        "in Khmer script. Keep English words if they are spoken. Do not translate, "
-        "summarize, add timestamps, or add commentary."
+        "Transcribe the audio verbatim in Khmer. Return only the transcript. "
+        "Write natural Khmer: do not put spaces between Khmer words, use the Khmer "
+        "sentence-ending mark ។ at sentence boundaries, and keep English words as spoken. "
+        "Do not translate, summarize, number the lines, or add commentary."
     )
     payload = {
         "contents": [
@@ -132,6 +146,7 @@ def transcribe_with_gemini(
                 if part.get("text"):
                     text_parts.append(part["text"])
         text = " ".join(text_parts).strip().strip('"').strip()
+        text = normalize_khmer_text(text)
         if not text:
             last_error = f"Google transcription ({model}) returned no text."
             continue

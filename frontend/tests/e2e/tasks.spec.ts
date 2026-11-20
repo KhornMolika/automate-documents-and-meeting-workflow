@@ -16,12 +16,13 @@ test.describe('Tasks', () => {
     await expect(page.getByText(title).first()).toBeVisible()
 
     const select = page.getByLabel('Status for Submit the E2E ethics approval.').last()
-    await select.selectOption('Completed')
+    await select.click()
+    await page.getByRole('option', { name: 'Completed' }).click()
     await expect(page.getByText('Task updated.')).toBeVisible()
 
     await page.reload()
     await page.waitForLoadState('networkidle')
-    await expect(page.getByLabel('Status for Submit the E2E ethics approval.').last()).toHaveValue('Completed')
+    await expect(page.getByLabel('Status for Submit the E2E ethics approval.').last()).toContainText('Completed')
 
     await page.getByRole('tab', { name: /Decisions/ }).click()
     await expect(page.getByText('Approve the proposal for the next stage.').last()).toBeVisible()

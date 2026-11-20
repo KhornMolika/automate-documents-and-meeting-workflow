@@ -15,6 +15,7 @@ import {
 } from '~/components/ui/dialog'
 import { Input } from '~/components/ui/input'
 import { Label } from '~/components/ui/label'
+import { Select } from '~/components/ui/select'
 import {
   Table,
   TableBody,
@@ -54,12 +55,24 @@ const uploading = ref(false)
 const summarizing = ref(false)
 const uploadForm = ref({
   title: '',
-  category_id: '',
+  category_id: 'NONE',
   year: '2026–2027',
   file: null as File | null,
 })
 
 const years = computed(() => [...new Set(documents.value.map(document => document.academic_year))].sort().reverse())
+const categoryOptions = computed(() => [
+  { value: 'ALL', label: 'All categories' },
+  ...categories.value.map(item => ({ value: item.id, label: item.name })),
+])
+const yearOptions = computed(() => [
+  { value: 'ALL', label: 'All years' },
+  ...years.value.map(item => ({ value: item, label: item })),
+])
+const uploadCategoryOptions = computed(() => [
+  { value: 'NONE', label: 'Uncategorised' },
+  ...categories.value.map(item => ({ value: item.id, label: item.name })),
+])
 
 const filteredDocuments = computed(() => {
   const query = search.value.trim().toLowerCase()
@@ -125,7 +138,7 @@ function onFile(event: Event) {
 function resetUpload() {
   uploadForm.value = {
     title: '',
-    category_id: '',
+    category_id: 'NONE',
     year: '2026–2027',
     file: null,
   }
@@ -141,7 +154,9 @@ async function addDocument() {
     const formData = new FormData()
     formData.append('file', uploadForm.value.file)
     if (uploadForm.value.title.trim()) formData.append('title', uploadForm.value.title.trim())
-    if (uploadForm.value.category_id) formData.append('category_id', uploadForm.value.category_id)
+    if (uploadForm.value.category_id && uploadForm.value.category_id !== 'NONE') {
+      formData.append('category_id', uploadForm.value.category_id)
+    }
     formData.append('academic_year', uploadForm.value.year)
 
     const created = await api<WorkspaceDocument>('/documents/upload', {
@@ -210,23 +225,19 @@ async function summarizeSelected() {
             class="pl-9"
           />
         </div>
-        <div class="flex gap-2">
-          <select
+        <div class="grid grid-cols-2 gap-2 sm:flex">
+          <Select
             v-model="category"
+            :options="categoryOptions"
             aria-label="Filter by category"
-            class="h-9 flex-1 rounded-md border border-input bg-card px-3 text-sm text-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 max-sm:h-10 sm:flex-none"
-          >
-            <option value="ALL">All categories</option>
-            <option v-for="item in categories" :key="item.id" :value="item.id">{{ item.name }}</option>
-          </select>
-          <select
+            class="min-w-0 sm:w-44"
+          />
+          <Select
             v-model="year"
+            :options="yearOptions"
             aria-label="Filter by academic year"
-            class="h-9 flex-1 rounded-md border border-input bg-card px-3 text-sm text-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 max-sm:h-10 sm:flex-none"
-          >
-            <option value="ALL">All years</option>
-            <option v-for="item in years" :key="item" :value="item">{{ item }}</option>
-          </select>
+            class="min-w-0 sm:w-36"
+          />
         </div>
       </div>
 
@@ -459,14 +470,12 @@ async function summarizeSelected() {
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1.5">
               <Label for="document-category">Category</Label>
-              <select
+              <Select
                 id="document-category"
                 v-model="uploadForm.category_id"
-                class="h-9 w-full rounded-md border border-input bg-card px-3 text-sm focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 max-sm:h-10"
-              >
-                <option value="">Uncategorised</option>
-                <option v-for="item in categories" :key="item.id" :value="item.id">{{ item.name }}</option>
-              </select>
+                :options="uploadCategoryOptions"
+                aria-label="Category"
+              />
             </div>
             <div class="space-y-1.5">
               <Label for="document-year">Academic year</Label>

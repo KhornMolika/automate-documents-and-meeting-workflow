@@ -4,6 +4,7 @@ import { CheckSquare, Scale } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { Badge } from '~/components/ui/badge'
 import { Card } from '~/components/ui/card'
+import { Select } from '~/components/ui/select'
 import EmptyState from '~/components/workspace/EmptyState.vue'
 import ErrorState from '~/components/workspace/ErrorState.vue'
 import LoadingState from '~/components/workspace/LoadingState.vue'
@@ -28,6 +29,11 @@ const decisions = computed(() => data.value?.decisions ?? [])
 const tab = ref<'actions' | 'decisions'>('actions')
 const filter = ref<'all' | 'open' | 'overdue' | 'completed'>('all')
 const updatingId = ref('')
+const statusOptions = [
+  { value: 'Pending', label: 'Pending' },
+  { value: 'In Progress', label: 'In Progress' },
+  { value: 'Completed', label: 'Completed' },
+]
 
 const filters = computed(() => [
   { value: 'all' as const, label: 'All', count: actionItems.value.length },
@@ -55,9 +61,8 @@ const filteredItems = computed(() => {
   return actionItems.value.filter(item => item.status === 'Completed')
 })
 
-async function updateStatus(item: TaskActionItem, event: Event) {
-  const status = (event.target as HTMLSelectElement).value
-  if (status === item.status) return
+async function updateStatus(item: TaskActionItem, status: string | number) {
+  if (String(status) === item.status) return
   updatingId.value = item.id
   try {
     const updated = await api<TaskActionItem>(`/tasks/action-items/${item.id}`, {
@@ -156,17 +161,14 @@ async function updateStatus(item: TaskActionItem, event: Event) {
                 </NuxtLink>
               </p>
             </div>
-            <select
-              :value="item.status"
+            <Select
+              :model-value="item.status"
+              :options="statusOptions"
               :disabled="updatingId === item.id"
-              class="h-9 w-full shrink-0 rounded-md border border-input bg-background px-2.5 text-[13px] sm:w-36"
               :aria-label="`Status for ${item.task_description}`"
-              @change="updateStatus(item, $event)"
-            >
-              <option value="Pending">Pending</option>
-              <option value="In Progress">In Progress</option>
-              <option value="Completed">Completed</option>
-            </select>
+              class="w-full shrink-0 sm:w-36"
+              @update:model-value="updateStatus(item, $event)"
+            />
           </div>
         </Card>
 

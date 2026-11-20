@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { CalendarDays, MoreHorizontal, Plus, Search, Trash2, Pencil } from 'lucide-vue-next'
+import { MoreHorizontal, Pencil, Plus, Search, Trash2 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { Button } from '~/components/ui/button'
 import { Card } from '~/components/ui/card'
@@ -14,6 +14,7 @@ import {
 } from '~/components/ui/dialog'
 import { Input } from '~/components/ui/input'
 import { Label } from '~/components/ui/label'
+import { Select } from '~/components/ui/select'
 import { Textarea } from '~/components/ui/textarea'
 import EmptyState from '~/components/workspace/EmptyState.vue'
 import ErrorState from '~/components/workspace/ErrorState.vue'
@@ -35,6 +36,11 @@ const departmentName = computed(() => user.value?.department?.name ?? 'Departmen
 
 const page = ref(1)
 const pageSize = ref(10)
+const pageSizeOptions = [
+  { value: 10, label: '10 rows' },
+  { value: 20, label: '20 rows' },
+  { value: 50, label: '50 rows' },
+]
 const view = ref<MeetingView>('all')
 const search = ref('')
 const debouncedSearch = ref('')
@@ -275,16 +281,14 @@ onUnmounted(() => {
           />
         </div>
         <div class="flex items-center gap-2">
-          <label for="meetings-page-size" class="text-[13px] text-muted-foreground">Rows</label>
-          <select
+          <label for="meetings-page-size" class="text-[13px] text-muted-foreground">Show</label>
+          <Select
             id="meetings-page-size"
-            v-model.number="pageSize"
-            class="h-9 rounded-md border border-input bg-card px-3 text-sm text-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
-          >
-            <option :value="10">10</option>
-            <option :value="20">20</option>
-            <option :value="50">50</option>
-          </select>
+            v-model="pageSize"
+            :options="pageSizeOptions"
+            aria-label="Rows per page"
+            class="w-32"
+          />
         </div>
       </div>
 

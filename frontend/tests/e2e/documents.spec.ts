@@ -54,6 +54,9 @@ test.describe('Documents', () => {
     await page.getByRole('button', { name: 'Upload document' }).click()
     await expect(dialog).toBeVisible()
     await dialog.getByLabel('Title').fill(title)
+    await dialog.locator('#document-category').click()
+    await page.getByRole('option', { name: 'Academic Policy' }).click()
+    await expect(dialog.locator('#document-category')).toContainText('Academic Policy')
     await dialog.locator('#document-file').setInputFiles({
       name: 'e2e_policy.csv',
       mimeType: 'text/csv',

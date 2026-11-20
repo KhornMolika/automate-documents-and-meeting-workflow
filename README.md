@@ -146,7 +146,7 @@ cp .env.example .env
 # edit .env and set GEMINI_API_KEY=...
 ```
 
-With a key configured, Khmer recordings are transcribed by Google's `gemini-3.5-transcribe` model, which is materially more accurate on Khmer script than the local CTC model. If that model is rate-limited or unavailable, the service tries `gemini-3.5-flash-lite`, then falls back to the local Khmer ASR model. English always uses local faster-whisper.
+With a key configured, Khmer recordings are transcribed by Google's `gemini-3.5-transcribe` model, which is materially more accurate on Khmer script than the local CTC model. If that model is rate-limited or unavailable, the service tries the configured Flash-Lite fallbacks, then falls back to the local Khmer ASR model. English always uses local faster-whisper.
 
 - Khmer audio is sent to Google only when `GEMINI_API_KEY` is set.
 - Khmer is sent in bounded chunks (120 seconds by default) rather than one request per VAD segment, which keeps the free API quota usable.
@@ -213,7 +213,7 @@ npm run test:e2e:live   # real Khmer + English recordings, Gemini transcription 
 The default Playwright suite runs against the real backend at `http://localhost:8000` and uses Chrome. The live suite additionally requires:
 
 - the speech service on `SPEECH_SERVICE_URL` (the local `run.sh` uses `http://127.0.0.1:8002`)
-- `GEMINI_API_KEY` in `speech-service/.env` for Khmer transcription (the service tries the transcription model, then `gemini-3.5-flash-lite`, then the local Khmer model)
+- `GEMINI_API_KEY` in `speech-service/.env` for Khmer transcription (the service tries the transcription model, then the configured Flash-Lite fallbacks, then the local Khmer model)
 - `GEMINI_API_KEY` in `backend/.env` for AI minutes and document summaries
 - `DEMO_DIR` pointing to the demo files (default `/Users/alexkgm/Desktop/demo`)
 
