@@ -139,12 +139,43 @@ test.describe('Meeting workspace', () => {
     await expect(dialog).toBeVisible()
   })
 
+  test('defaults minutes to Khmer and can regenerate in English', async ({ page, request }) => {
+    const token = await authenticate(page, request)
+    const title = uniqueTitle('E2E Minutes Language')
+    const meeting = await seedTranscriptMeeting(request, token, title)
+    let requestedLanguage = ''
+
+    await page.route(`**/synthesize-mom**`, async route => {
+      requestedLanguage = new URL(route.request().url()).searchParams.get('language') ?? ''
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meeting_title: title,
+          executive_summary: requestedLanguage === 'km' ? 'សេចក្តីសង្ខេបសាកល្បង។' : 'English summary.',
+          discussion_points: ['Discussion point'],
+          decisions: [],
+          action_items: [],
+        }),
+      })
+    })
+
+    await page.goto(`/meetings/${meeting.id}/review`)
+    await page.waitForLoadState('networkidle')
+    await expect(page.getByRole('button', { name: 'ខ្មែរ' })).toHaveAttribute('aria-pressed', 'true')
+
+    await page.getByRole('button', { name: 'English', exact: true }).click()
+    await page.getByRole('button', { name: 'Generate draft from transcript' }).click()
+    await expect(page.locator('#mom-summary')).toHaveValue('English summary.')
+    expect(requestedLanguage).toBe('en')
+  })
+
   test('shows a provider error instead of inventing a draft', async ({ page, request }) => {
     const token = await authenticate(page, request)
     const title = uniqueTitle('E2E No AI Draft')
     const meeting = await seedTranscriptMeeting(request, token, title)
 
-    await page.route(`**/api/v1/meetings/${meeting.id}/synthesize-mom`, route =>
+    await page.route(`**/api/v1/meetings/${meeting.id}/synthesize-mom**`, route =>
       route.fulfill({
         status: 503,
         contentType: 'application/json',

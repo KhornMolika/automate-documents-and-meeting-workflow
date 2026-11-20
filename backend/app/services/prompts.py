@@ -25,8 +25,10 @@ def build_mom_prompt(
     agendas: List[str],
     transcripts: List[Dict[str, Any]],
     current_date: str | None = None,
+    language: str = "en",
 ) -> str:
     current_date = current_date or datetime.utcnow().strftime("%Y-%m-%d")
+    language_name = "Khmer" if language == "km" else "English"
     dialogue_lines = []
     for item in transcripts:
         speaker = item.get("speaker_label", "Speaker")
@@ -57,6 +59,7 @@ Instructions:
    - "assignee_name": Name of responsible person if explicitly mentioned (otherwise null).
    - "deadline": Target date formatted as YYYY-MM-DD if mentioned (otherwise null). If no year is spoken, use the current year unless the context clearly indicates another year.
    - "confidence_score": Between 0.0 and 1.0.
+5. Write all human-readable values in {language_name}. Keep the JSON keys exactly as shown and do not translate personal names.{" Use natural Khmer: do not insert spaces between Khmer words, and use the Khmer sentence-ending mark ។ at sentence boundaries." if language == "km" else ""}
 
 Respond strictly in JSON matching the schema:
 {{

@@ -207,6 +207,16 @@ async def test_document_and_meeting_lifecycle(client: AsyncClient, db_session: A
     # No LLM provider is configured for tests: the endpoint must fail honestly.
     synth_res = await client.post(f"/api/v1/meetings/{meeting_id}/synthesize-mom", headers=headers)
     assert synth_res.status_code == 503
+    synth_km_res = await client.post(
+        f"/api/v1/meetings/{meeting_id}/synthesize-mom?language=km",
+        headers=headers,
+    )
+    assert synth_km_res.status_code == 503
+    bad_language_res = await client.post(
+        f"/api/v1/meetings/{meeting_id}/synthesize-mom?language=fr",
+        headers=headers,
+    )
+    assert bad_language_res.status_code == 422
 
     draft_payload = {
         "executive_summary": "The board reviewed the research proposal and confirmed the next steps.",

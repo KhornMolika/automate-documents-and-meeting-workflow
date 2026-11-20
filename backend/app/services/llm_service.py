@@ -8,8 +8,25 @@ from app.core.config import settings
 from app.schemas.meeting import MinutesOfMeetingSchema
 from app.services.gemini_service import AIServiceUnavailable, gemini_service
 from app.services.prompts import build_document_summary_prompt, build_mom_prompt
+from app.services.text import normalize_khmer_text
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_khmer_mom(mom: MinutesOfMeetingSchema) -> MinutesOfMeetingSchema:
+    mom.executive_summary = normalize_khmer_text(mom.executive_summary)
+    mom.discussion_points = [normalize_khmer_text(point) for point in mom.discussion_points]
+    for decision in mom.decisions:
+        decision.decision_text = normalize_khmer_text(decision.decision_text)
+        if decision.agenda_topic:
+            decision.agenda_topic = normalize_khmer_text(decision.agenda_topic)
+        if decision.context_notes:
+            decision.context_notes = normalize_khmer_text(decision.context_notes)
+    for item in mom.action_items:
+        item.task_description = normalize_khmer_text(item.task_description)
+        if item.assignee_name:
+            item.assignee_name = normalize_khmer_text(item.assignee_name)
+    return mom
 
 
 def _extract_json(raw: str) -> Dict[str, Any]:
@@ -182,6 +199,7 @@ class LLMService:
         meeting_title: str,
         agendas: List[str],
         transcripts: List[Dict[str, Any]],
+        language: str = "en",
     ) -> MinutesOfMeetingSchema:
         has_text = any(
             (item.get("original_text") or item.get("translated_text") or "").strip()
@@ -189,19 +207,31 @@ class LLMService:
         )
         if not has_text:
             raise AIServiceUnavailable("No transcript text is available for synthesis.")
+        output_language = "km" if language == "km" else "en"
         if self.provider == "gemini":
-            return await gemini_service.synthesize_meeting_mom(
-                meeting_title, agendas, transcripts
+            mom = await gemini_service.synthesize_meeting_mom(
+                meeting_title, agendas, transcripts, language=output_language
             )
+        else:
+            raw = await self._generate_json(
+                build_mom_prompt(
+                    meeting_title,
+                    agendas,
+                    transcripts,
+                    language=output_language,
+                )
+            )
+            try:
+                data = _extract_json(raw)
+                mom = MinutesOfMeetingSchema(**data)
+            except Exception as exc:
+                raise AIServiceUnavailable(
+                    f"{self.describe()} returned an invalid MoM draft: {exc}"
+                ) from exc
 
-        raw = await self._generate_json(build_mom_prompt(meeting_title, agendas, transcripts))
-        try:
-            data = _extract_json(raw)
-            return MinutesOfMeetingSchema(**data)
-        except Exception as exc:
-            raise AIServiceUnavailable(
-                f"{self.describe()} returned an invalid MoM draft: {exc}"
-            ) from exc
+        if output_language == "km":
+            return _normalize_khmer_mom(mom)
+        return mom
 
 
 llm_service = LLMService()

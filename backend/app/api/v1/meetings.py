@@ -438,6 +438,7 @@ async def get_meeting_transcripts(
 @router.post("/{meeting_id}/synthesize-mom", response_model=MinutesOfMeetingSchema)
 async def synthesize_mom(
     meeting_id: str,
+    language: Literal["en", "km"] = Query("en"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
@@ -474,6 +475,7 @@ async def synthesize_mom(
             meeting_title=meeting.title,
             agendas=agendas,
             transcripts=transcripts,
+            language=language,
         )
     except AIServiceUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

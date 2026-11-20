@@ -87,9 +87,11 @@ test.describe('Live services', () => {
 
     await page.goto(`/meetings/${meeting.id}/review`)
     await page.waitForLoadState('networkidle')
+    await expect(page.getByRole('button', { name: 'ខ្មែរ' })).toHaveAttribute('aria-pressed', 'true')
     await page.getByRole('button', { name: 'Generate draft from transcript' }).click()
 
     await expect(page.locator('#mom-summary')).not.toHaveValue('', { timeout: 240_000 })
+    await expect(page.locator('#mom-summary')).toHaveValue(/[\u1780-\u17FF]/)
     await expect(page.getByRole('textbox', { name: /^Action item/ }).first()).toBeVisible()
     await expect(page.getByText('Ollama is not reachable')).toHaveCount(0)
   })

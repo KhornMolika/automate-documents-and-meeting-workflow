@@ -36,7 +36,7 @@ docker-compose.yml
 2. Open the meeting and choose **Add content**.
 3. Add a recording, link, or transcript.
 4. Correct the transcript where needed, including speaker names.
-5. Optionally generate an AI draft, or write the minutes directly.
+5. Optionally generate an AI draft in **English or Khmer** (the toggle defaults to the transcript language), or write the minutes directly.
 6. Publish. This single action:
    - verifies the minutes
    - writes the official DOCX and action-item CSV

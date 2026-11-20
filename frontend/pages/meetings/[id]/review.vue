@@ -71,6 +71,8 @@ const isVerified = ref(false)
 const generated = ref(false)
 const generating = ref(false)
 const generatingSeconds = ref(0)
+const momLanguage = ref<'en' | 'km'>('en')
+const draftLanguage = ref<'en' | 'km' | null>(null)
 const saving = ref(false)
 const publishing = ref(false)
 const approveOpen = ref(false)
@@ -126,6 +128,10 @@ const meetingState = computed(() => {
   return 'Scheduled'
 })
 
+function textHasKhmer(value: string | null | undefined) {
+  return /[\u1780-\u17FF]/.test(value ?? '')
+}
+
 function hydrate(summary?: MeetingSummary | null) {
   if (!summary) {
     mom.executiveSummary = ''
@@ -134,8 +140,17 @@ function hydrate(summary?: MeetingSummary | null) {
     mom.actionItems = []
     isVerified.value = false
     generated.value = false
+    draftLanguage.value = null
     return
   }
+  const combined = [
+    summary.executive_summary,
+    ...parseDiscussionPoints(summary.discussion_highlights),
+    ...summary.decisions.map(decision => `${decision.agenda_topic ?? ''} ${decision.decision_text}`),
+    ...summary.action_items.map(item => item.task_description),
+  ].join(' ')
+  draftLanguage.value = textHasKhmer(combined) ? 'km' : 'en'
+  momLanguage.value = draftLanguage.value
   mom.executiveSummary = summary.executive_summary
   mom.discussionPoints = parseDiscussionPoints(summary.discussion_highlights)
   mom.decisions = summary.decisions.map(decision => ({
@@ -170,6 +185,20 @@ const hasDraft = computed(() =>
   || mom.actionItems.length > 0,
 )
 const canGenerate = computed(() => sourceTranscripts.value.length > 0 && !hasDraft.value && !isVerified.value)
+const canRegenerate = computed(() => sourceTranscripts.value.length > 0 && hasDraft.value && !isVerified.value)
+
+watch(
+  sourceTranscripts,
+  (items) => {
+    if (hasDraft.value) return
+    momLanguage.value = items.some(
+      item => textHasKhmer(item.original_text) || textHasKhmer(item.translated_text),
+    )
+      ? 'km'
+      : 'en'
+  },
+  { immediate: true },
+)
 
 const steps = computed(() => [
   {
@@ -411,9 +440,10 @@ async function generateDraft() {
   generating.value = true
   aiError.value = ''
   try {
-    const result = await api<MinutesOfMeeting>(`/meetings/${meetingId.value}/synthesize-mom`, {
-      method: 'POST',
-    })
+    const result = await api<MinutesOfMeeting>(
+      `/meetings/${meetingId.value}/synthesize-mom?language=${momLanguage.value}`,
+      { method: 'POST' },
+    )
     mom.executiveSummary = result.executive_summary
     mom.discussionPoints = result.discussion_points
     mom.decisions = result.decisions.map(decision => ({
@@ -426,7 +456,10 @@ async function generateDraft() {
       deadline: item.deadline ?? '',
     }))
     generated.value = true
-    toast.success('Draft generated. Review every section before publishing.')
+    draftLanguage.value = momLanguage.value
+    toast.success(
+      `Draft generated in ${momLanguage.value === 'km' ? 'Khmer' : 'English'}. Review every section before publishing.`,
+    )
   } catch (err: any) {
     aiError.value = err?.data?.detail ?? 'Could not generate a draft.'
   } finally {
@@ -680,6 +713,51 @@ onUnmounted(() => {
             <CardDescription>
               {{ isVerified ? 'These minutes are published and read-only.' : 'Generate a draft or write the minutes directly. Only the published version becomes official.' }}
             </CardDescription>
+            <div v-if="!isVerified" class="mt-3 flex flex-wrap items-center gap-2">
+              <span class="text-[12px] text-muted-foreground">Language</span>
+              <div
+                class="inline-flex rounded-md border bg-muted/30 p-0.5"
+                role="group"
+                aria-label="Minutes language"
+              >
+                <button
+                  type="button"
+                  class="rounded px-2.5 py-1 text-[12px] font-medium transition-colors"
+                  :class="momLanguage === 'en' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+                  :aria-pressed="momLanguage === 'en'"
+                  @click="momLanguage = 'en'"
+                >
+                  English
+                </button>
+                <button
+                  type="button"
+                  class="rounded px-2.5 py-1 font-khmer text-[12px] font-medium transition-colors"
+                  :class="momLanguage === 'km' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+                  :aria-pressed="momLanguage === 'km'"
+                  @click="momLanguage = 'km'"
+                >
+                  ខ្មែរ
+                </button>
+              </div>
+              <Button
+                v-if="canRegenerate"
+                variant="ghost"
+                size="sm"
+                class="ml-auto text-brand"
+                :disabled="generating"
+                @click="generateDraft"
+              >
+                <span v-if="generating" class="h-3 w-3 animate-spin rounded-full border-2 border-brand border-t-transparent" />
+                {{ generating ? 'Regenerating…' : `Regenerate in ${momLanguage === 'km' ? 'Khmer' : 'English'}` }}
+              </Button>
+            </div>
+            <p
+              v-if="!isVerified && canRegenerate && draftLanguage && draftLanguage !== momLanguage"
+              class="mt-2 text-[12px] text-muted-foreground"
+            >
+              Current draft is in {{ draftLanguage === 'km' ? 'Khmer' : 'English' }}. Regenerate to apply {{ momLanguage === 'km' ? 'Khmer' : 'English' }}.
+            </p>
+            <p v-if="canRegenerate && aiError" class="mt-2 text-[13px] text-negative">{{ aiError }}</p>
           </CardHeader>
 
           <CardContent class="flex-1 space-y-6 overflow-y-auto border-t pt-5">
@@ -705,7 +783,13 @@ onUnmounted(() => {
                 <Label for="mom-summary">Executive summary</Label>
                 <span class="text-[13px] text-muted-foreground">{{ isVerified ? 'Published' : 'Editable' }}</span>
               </div>
-              <Textarea id="mom-summary" v-model="mom.executiveSummary" rows="5" :readonly="isVerified" />
+              <Textarea
+                id="mom-summary"
+                v-model="mom.executiveSummary"
+                rows="5"
+                :readonly="isVerified"
+                :class="draftLanguage === 'km' ? 'font-khmer' : ''"
+              />
             </section>
 
             <section class="space-y-2">
@@ -719,7 +803,7 @@ onUnmounted(() => {
                   <Input
                     v-model="mom.discussionPoints[index]"
                     :aria-label="`Discussion point ${index + 1}`"
-                    class="flex-1"
+                    :class="['flex-1', draftLanguage === 'km' ? 'font-khmer' : '']"
                     :readonly="isVerified"
                   />
                   <Button
@@ -751,7 +835,7 @@ onUnmounted(() => {
                       v-model="mom.decisions[index].agendaTopic"
                       :aria-label="`Decision ${index + 1} agenda topic`"
                       placeholder="Agenda topic"
-                      class="h-8 max-w-[260px] text-[13px]"
+                      :class="['h-8 max-w-[260px] text-[13px]', draftLanguage === 'km' ? 'font-khmer' : '']"
                       :readonly="isVerified"
                     />
                     <Button
@@ -769,6 +853,7 @@ onUnmounted(() => {
                     v-model="mom.decisions[index].decisionText"
                     :aria-label="`Decision ${index + 1} text`"
                     placeholder="What was agreed"
+                    :class="draftLanguage === 'km' ? 'font-khmer' : ''"
                     :readonly="isVerified"
                   />
                 </div>
@@ -791,7 +876,7 @@ onUnmounted(() => {
                       v-model="mom.actionItems[index].taskDescription"
                       :aria-label="`Action item ${index + 1} task`"
                       placeholder="Task description"
-                      class="flex-1"
+                      :class="['flex-1', draftLanguage === 'km' ? 'font-khmer' : '']"
                       :readonly="isVerified"
                     />
                     <Button
@@ -807,7 +892,13 @@ onUnmounted(() => {
                   <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <div class="space-y-1">
                       <Label :for="`action-owner-${index}`" class="text-[13px] text-muted-foreground">Assignee</Label>
-                      <Input :id="`action-owner-${index}`" v-model="mom.actionItems[index].assigneeName" placeholder="Name" :readonly="isVerified" />
+                      <Input
+                        :id="`action-owner-${index}`"
+                        v-model="mom.actionItems[index].assigneeName"
+                        placeholder="Name"
+                        :class="draftLanguage === 'km' ? 'font-khmer' : ''"
+                        :readonly="isVerified"
+                      />
                     </div>
                     <div class="space-y-1">
                       <Label :for="`action-deadline-${index}`" class="text-[13px] text-muted-foreground">Deadline</Label>

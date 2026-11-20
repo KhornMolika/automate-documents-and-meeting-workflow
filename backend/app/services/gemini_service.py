@@ -169,6 +169,7 @@ class GeminiService:
         meeting_title: str,
         agendas: List[str],
         transcripts: List[Dict[str, Any]],
+        language: str = "en",
     ) -> MinutesOfMeetingSchema:
         full_dialogue = "\n".join(
             f"[{item.get('speaker_label', 'Speaker')}]: {item.get('original_text', '')}"
@@ -183,7 +184,7 @@ class GeminiService:
             raise AIServiceUnavailable("No transcript text is available for synthesis.")
 
         data = await self._generate_json(
-            build_mom_prompt(meeting_title, agendas, transcripts)
+            build_mom_prompt(meeting_title, agendas, transcripts, language=language)
         )
         try:
             return MinutesOfMeetingSchema(**data)
