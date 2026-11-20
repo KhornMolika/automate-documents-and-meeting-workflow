@@ -109,7 +109,7 @@ test.describe('Meeting workspace', () => {
     await page.getByLabel('Search documents').fill(title)
     const archivedRow = page.getByTestId('document-table').locator('tbody tr').first()
     await expect(archivedRow).toContainText(title)
-    await archivedRow.getByRole('button', { name: 'Open' }).click()
+    await archivedRow.getByRole('button').first().click()
     const archivedDialog = page.getByTestId('document-detail')
     await expect(archivedDialog).toContainText('Archived from a meeting')
     await archivedDialog.getByRole('link', { name: 'Open meeting' }).click()

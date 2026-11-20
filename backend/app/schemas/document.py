@@ -1,6 +1,6 @@
 from typing import List, Optional
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CategoryOut(BaseModel):
@@ -46,3 +46,20 @@ class DocumentSearchResponse(BaseModel):
     total: int
     items: List[DocumentOut]
     query_latency_ms: float
+
+
+class DocumentUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=255)
+    category_id: Optional[str] = None
+    academic_year: Optional[str] = Field(None, min_length=1, max_length=50)
+
+
+class DocumentArchiveInput(BaseModel):
+    is_archived: bool
+
+
+class GoogleImportInput(BaseModel):
+    url: str
+    title: Optional[str] = None
+    category_id: Optional[str] = None
+    academic_year: str = "2026-2027"

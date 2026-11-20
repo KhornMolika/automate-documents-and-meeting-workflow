@@ -52,7 +52,7 @@ test.describe('Mobile layout', () => {
     await page.waitForLoadState('networkidle')
     await page.getByLabel('Search documents').fill(documentTitle)
     const row = page.getByTestId('document-table').locator('tbody tr').first()
-    await row.getByRole('button', { name: 'Open' }).click()
+    await row.getByRole('button').first().click()
 
     const dialog = page.getByTestId('document-detail')
     await expect(dialog).toBeVisible()

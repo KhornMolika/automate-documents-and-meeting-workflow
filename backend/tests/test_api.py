@@ -1,8 +1,9 @@
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.user import Department
+from app.models.user import Department, User
 
 
 @pytest.mark.asyncio
@@ -373,3 +374,132 @@ async def test_document_and_meeting_lifecycle(client: AsyncClient, db_session: A
         document["drive_file_id"] != meeting_id
         for document in search_after_delete.json()["items"]
     )
+
+    # Document actions: download, rename, version, archive/restore and delete.
+    download_res = await client.get(f"/api/v1/documents/{doc_id}/download", headers=headers)
+    assert download_res.status_code == 200
+    assert download_res.content == sample_file_content
+
+    version_res = await client.post(
+        f"/api/v1/documents/{doc_id}/versions",
+        files={"file": ("policy_v2.csv", b"Policy,Owner\nUpdated,Academic Affairs\n", "text/csv")},
+        headers=headers,
+    )
+    assert version_res.status_code == 200
+    assert version_res.json()["current_version"] == 2
+    assert len(version_res.json()["versions"]) == 2
+
+    rename_doc = await client.patch(
+        f"/api/v1/documents/{doc_id}",
+        json={"title": "Renamed Research Policy"},
+        headers=headers,
+    )
+    assert rename_doc.status_code == 200
+    assert rename_doc.json()["title"] == "Renamed Research Policy"
+
+    archive_doc = await client.patch(
+        f"/api/v1/documents/{doc_id}/archive",
+        json={"is_archived": True},
+        headers=headers,
+    )
+    assert archive_doc.status_code == 200
+    assert archive_doc.json()["is_archived"] is True
+    active_docs = await client.get("/api/v1/documents?limit=200", headers=headers)
+    assert all(item["id"] != doc_id for item in active_docs.json())
+    archived_docs = await client.get(
+        "/api/v1/documents?limit=200&include_archived=true", headers=headers
+    )
+    assert any(item["id"] == doc_id for item in archived_docs.json())
+
+    restore_doc = await client.patch(
+        f"/api/v1/documents/{doc_id}/archive",
+        json={"is_archived": False},
+        headers=headers,
+    )
+    assert restore_doc.status_code == 200
+    assert restore_doc.json()["is_archived"] is False
+
+    delete_doc = await client.delete(f"/api/v1/documents/{doc_id}", headers=headers)
+    assert delete_doc.status_code == 204
+    missing_doc = await client.get(f"/api/v1/documents/{doc_id}", headers=headers)
+    assert missing_doc.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_google_document_import(client: AsyncClient, db_session: AsyncSession, monkeypatch):
+    department = Department(
+        department_code="GDRIVE",
+        name="Google Import Department",
+        faculty="Faculty of Science & Technology",
+    )
+    db_session.add(department)
+    await db_session.commit()
+    await db_session.refresh(department)
+    admin_user = (
+        await db_session.execute(select(User).where(User.email == "admin@aub.edu.kh"))
+    ).scalar_one()
+    admin_user.department_id = department.id
+    await db_session.commit()
+
+    admin_login = await client.post(
+        "/api/v1/auth/login",
+        data={"username": "admin@aub.edu.kh", "password": "Admin@AUB2026"},
+    )
+    headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+
+    class FakeResponse:
+        status_code = 200
+        headers = {
+            "content-type": "text/csv",
+            "content-disposition": 'attachment; filename="imported-sheet.csv"',
+        }
+
+        async def aiter_bytes(self):
+            yield b"Policy,Owner\nImported Google Sheet,Academic Affairs\n"
+
+    class FakeStream:
+        async def __aenter__(self):
+            return FakeResponse()
+
+        async def __aexit__(self, *args):
+            return False
+
+    requested_urls = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, method, url):
+            requested_urls.append(url)
+            return FakeStream()
+
+    monkeypatch.setattr("app.api.v1.documents.httpx.AsyncClient", FakeClient)
+
+    import_res = await client.post(
+        "/api/v1/documents/import/google",
+        json={
+            "url": "https://docs.google.com/spreadsheets/d/abc123/edit#gid=0",
+            "title": "Imported Google Sheet",
+            "academic_year": "2026-2027",
+        },
+        headers=headers,
+    )
+    assert import_res.status_code == 200, import_res.text
+    imported = import_res.json()
+    assert imported["title"] == "Imported Google Sheet"
+    assert imported["latest_version"]["file_name"] == "imported-sheet.csv"
+    assert "spreadsheets/d/abc123/export?format=xlsx" in requested_urls[0]
+
+    invalid_res = await client.post(
+        "/api/v1/documents/import/google",
+        json={"url": "https://example.com/not-google"},
+        headers=headers,
+    )
+    assert invalid_res.status_code == 400

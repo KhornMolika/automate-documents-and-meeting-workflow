@@ -1,22 +1,164 @@
-import os
-import time
+import io
 import json
-from typing import List, Optional, Any, Literal
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query, status
-from sqlalchemy import select, or_, desc
+import os
+import re
+import time
+from pathlib import Path
+from typing import Any, List, Literal, Optional
+from urllib.parse import unquote
+
+import httpx
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, Response
+from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from starlette.datastructures import Headers
 
+from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
-from app.api.deps import get_current_user
+from app.models.document import Document, DocumentCategory, DocumentVersion
 from app.models.user import User
-from app.models.document import Document, DocumentVersion, DocumentCategory
-from app.schemas.document import DocumentOut, DocumentSearchResponse, CategoryOut
-from app.services.extractor import extract_text, compute_sha256
-from app.services.llm_service import llm_service, AIServiceUnavailable
+from app.schemas.document import (
+    CategoryOut,
+    DocumentArchiveInput,
+    DocumentOut,
+    DocumentSearchResponse,
+    DocumentUpdate,
+    GoogleImportInput,
+)
+from app.services.extractor import compute_sha256, extract_text
+from app.services.llm_service import AIServiceUnavailable, llm_service
 
 router = APIRouter(prefix="/documents", tags=["Document Management"])
+
+_GOOGLE_DOC_RE = re.compile(r"https?://docs\.google\.com/document/d/([A-Za-z0-9_-]+)")
+_GOOGLE_SHEET_RE = re.compile(r"https?://docs\.google\.com/spreadsheets/d/([A-Za-z0-9_-]+)")
+_GOOGLE_SLIDE_RE = re.compile(r"https?://docs\.google\.com/presentation/d/([A-Za-z0-9_-]+)")
+_GOOGLE_DRIVE_FILE_RE = re.compile(r"https?://drive\.google\.com/file/d/([A-Za-z0-9_-]+)")
+_GOOGLE_DRIVE_OPEN_RE = re.compile(r"https?://drive\.google\.com/open\?id=([A-Za-z0-9_-]+)")
+
+
+def _can_access_document(document: Document, user: User) -> bool:
+    if user.is_superuser or not user.department_id:
+        return True
+    return document.department_id == user.department_id
+
+
+def _can_manage_document(document: Document, user: User) -> bool:
+    if user.is_superuser or document.owner_id == user.id:
+        return True
+    if not _can_access_document(document, user):
+        return False
+    return any(role.role_name in {"System Admin", "Department Admin"} for role in user.roles)
+
+
+def _document_options():
+    return (
+        selectinload(Document.category),
+        selectinload(Document.versions),
+    )
+
+
+def _attach_latest(document: Document) -> Document:
+    document.latest_version = document.versions[0] if document.versions else None
+    return document
+
+
+async def _load_document(db: AsyncSession, document_id: str) -> Document:
+    stmt = (
+        select(Document)
+        .where(Document.id == document_id)
+        .options(*_document_options())
+        .execution_options(populate_existing=True)
+    )
+    document = (await db.execute(stmt)).scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return _attach_latest(document)
+
+
+def _validate_document_file(filename: str) -> str:
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if extension not in settings.ALLOWED_EXTENSIONS:
+        allowed = ", ".join(settings.ALLOWED_EXTENSIONS)
+        raise HTTPException(
+            status_code=400,
+            detail=f"File extension '.{extension}' is not supported. Allowed: {allowed}",
+        )
+    return extension
+
+
+async def _read_limited_upload(upload: UploadFile) -> bytes:
+    data = await upload.read()
+    if len(data) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File size exceeds limit of {settings.MAX_UPLOAD_SIZE_MB}MB.",
+        )
+    return data
+
+
+def _google_export_target(url: str) -> tuple[str, str, str]:
+    """Return (download_url, filename, mime_type) for a supported Google link."""
+    value = url.strip()
+    document = _GOOGLE_DOC_RE.search(value)
+    if document:
+        file_id = document.group(1)
+        return (
+            f"https://docs.google.com/document/d/{file_id}/export?format=docx",
+            f"google-doc-{file_id[:8]}.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    sheet = _GOOGLE_SHEET_RE.search(value)
+    if sheet:
+        file_id = sheet.group(1)
+        return (
+            f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx",
+            f"google-sheet-{file_id[:8]}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    slide = _GOOGLE_SLIDE_RE.search(value)
+    if slide:
+        file_id = slide.group(1)
+        return (
+            f"https://docs.google.com/presentation/d/{file_id}/export?format=pdf",
+            f"google-slides-{file_id[:8]}.pdf",
+            "application/pdf",
+        )
+    drive_file = _GOOGLE_DRIVE_FILE_RE.search(value) or _GOOGLE_DRIVE_OPEN_RE.search(value)
+    if drive_file:
+        file_id = drive_file.group(1)
+        return (
+            f"https://drive.google.com/uc?export=download&id={file_id}",
+            f"google-drive-{file_id[:8]}.bin",
+            "application/octet-stream",
+        )
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Use a Google Docs, Google Sheets, Google Slides, or Google Drive file link. "
+            "Share pages that require sign-in are not supported."
+        ),
+    )
+
+
+def _imported_filename(content_type: str, content_disposition: str | None, fallback: str) -> str:
+    if content_disposition:
+        match = re.search(r'filename\*?=(?:UTF-8\'\'|"?)([^";]+)', content_disposition, re.I)
+        if match:
+            candidate = unquote(match.group(1)).strip().strip('"')
+            if candidate:
+                return Path(candidate).name
+    suffix = {
+        "application/pdf": ".pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+        "text/csv": ".csv",
+        "application/vnd.ms-excel": ".xls",
+    }.get(content_type.split(";")[0].strip().lower())
+    return fallback if not suffix or fallback.endswith(suffix) else f"{fallback}{suffix}"
 
 
 @router.post("/upload", response_model=DocumentOut)
@@ -134,10 +276,221 @@ async def upload_document(
     return created
 
 
+@router.patch("/{document_id}", response_model=DocumentOut)
+async def update_document(
+    document_id: str,
+    payload: DocumentUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    document = await _load_document(db, document_id)
+    if not _can_manage_document(document, current_user):
+        raise HTTPException(status_code=403, detail="You cannot edit this document.")
+
+    if payload.title is not None:
+        title = payload.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Document title cannot be empty.")
+        document.title = title
+    if payload.category_id is not None:
+        if payload.category_id:
+            category = await db.get(DocumentCategory, payload.category_id)
+            if not category:
+                raise HTTPException(status_code=400, detail="The selected category does not exist.")
+            document.category_id = category.id
+        else:
+            document.category_id = None
+    if payload.academic_year is not None:
+        document.academic_year = payload.academic_year.strip()
+
+    await db.commit()
+    return await _load_document(db, document_id)
+
+
+@router.patch("/{document_id}/archive", response_model=DocumentOut)
+async def archive_document(
+    document_id: str,
+    payload: DocumentArchiveInput,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    document = await _load_document(db, document_id)
+    if not _can_manage_document(document, current_user):
+        raise HTTPException(status_code=403, detail="You cannot archive this document.")
+
+    document.is_archived = payload.is_archived
+    await db.commit()
+    return await _load_document(db, document_id)
+
+
+@router.get("/{document_id}/download")
+async def download_document(
+    document_id: str,
+    version_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> FileResponse:
+    document = await _load_document(db, document_id)
+    if not _can_access_document(document, current_user):
+        raise HTTPException(status_code=403, detail="You cannot download this document.")
+
+    version = None
+    if version_id:
+        version = next((item for item in document.versions if item.id == version_id), None)
+    else:
+        version = document.versions[0] if document.versions else None
+    if not version:
+        raise HTTPException(status_code=404, detail="Document version not found.")
+
+    path = Path(version.file_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="The stored file could not be found.")
+    return FileResponse(path, media_type=version.mime_type, filename=version.file_name)
+
+
+@router.post("/{document_id}/versions", response_model=DocumentOut)
+async def upload_document_version(
+    document_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    document = await _load_document(db, document_id)
+    if not _can_access_document(document, current_user):
+        raise HTTPException(status_code=403, detail="You cannot update this document.")
+
+    filename = Path(file.filename or "document").name
+    _validate_document_file(filename)
+    file_bytes = await _read_limited_upload(file)
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+
+    checksum = compute_sha256(file_bytes)
+    if any(version.sha256_checksum == checksum for version in document.versions):
+        raise HTTPException(status_code=409, detail="This file is already one of the document versions.")
+
+    extracted_text = extract_text(file_bytes, filename)
+    next_version = max((version.version_number for version in document.versions), default=0) + 1
+    os.makedirs("./uploads", exist_ok=True)
+    local_path = f"./uploads/{checksum}_{filename}"
+    with open(local_path, "wb") as target:
+        target.write(file_bytes)
+
+    version = DocumentVersion(
+        document_id=document.id,
+        version_number=next_version,
+        file_name=filename,
+        file_path=local_path,
+        file_size_bytes=len(file_bytes),
+        mime_type=file.content_type or "application/octet-stream",
+        sha256_checksum=checksum,
+        extracted_text=extracted_text,
+        uploaded_by=current_user.id,
+    )
+    db.add(version)
+    document.current_version = next_version
+    await db.commit()
+    return await _load_document(db, document_id)
+
+
+@router.delete("/{document_id}", status_code=204)
+async def delete_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    document = await _load_document(db, document_id)
+    if not _can_manage_document(document, current_user):
+        raise HTTPException(status_code=403, detail="You cannot delete this document.")
+
+    paths = [Path(version.file_path) for version in document.versions]
+    await db.delete(document)
+    await db.commit()
+    for path in paths:
+        path.unlink(missing_ok=True)
+    return Response(status_code=204)
+
+
+@router.post("/import/google", response_model=DocumentOut)
+async def import_google_document(
+    payload: GoogleImportInput,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    download_url, fallback_filename, fallback_mime = _google_export_target(payload.url)
+    limit = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
+            async with client.stream("GET", download_url) as response:
+                if response.status_code in {401, 403}:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Google requires permission to open this file. Share it with "
+                            "“Anyone with the link” or download it and upload it manually."
+                        ),
+                    )
+                if response.status_code != 200:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Google returned HTTP {response.status_code} for this file.",
+                    )
+                content_type = response.headers.get("content-type", fallback_mime)
+                if "text/html" in content_type.lower():
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Google returned a sign-in page instead of the file. Make the "
+                            "document viewable by anyone with the link, or upload a downloaded copy."
+                        ),
+                    )
+
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    data.extend(chunk)
+                    if len(data) > limit:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"File size exceeds limit of {settings.MAX_UPLOAD_SIZE_MB}MB.",
+                        )
+                filename = _imported_filename(
+                    content_type,
+                    response.headers.get("content-disposition"),
+                    fallback_filename,
+                )
+    except HTTPException:
+        raise
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not reach Google Drive: {exc}",
+        ) from exc
+
+    _validate_document_file(filename)
+    if not data:
+        raise HTTPException(status_code=400, detail="Google returned an empty file.")
+
+    upload = UploadFile(
+        file=io.BytesIO(bytes(data)),
+        filename=filename,
+        headers=Headers({"content-type": content_type or fallback_mime}),
+    )
+    return await upload_document(
+        file=upload,
+        title=payload.title,
+        category_id=payload.category_id,
+        academic_year=payload.academic_year,
+        db=db,
+        current_user=current_user,
+    )
+
+
 @router.get("", response_model=List[DocumentOut])
 async def list_documents(
     category_id: Optional[str] = None,
     academic_year: Optional[str] = None,
+    include_archived: bool = Query(False),
     skip: int = 0,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
@@ -145,12 +498,13 @@ async def list_documents(
 ) -> Any:
     stmt = (
         select(Document)
-        .where(Document.is_archived == False)
-        .options(selectinload(Document.category), selectinload(Document.versions))
+        .options(*_document_options())
         .order_by(desc(Document.created_at))
         .offset(skip)
         .limit(limit)
     )
+    if not include_archived:
+        stmt = stmt.where(Document.is_archived.is_(False))
     if current_user.department_id:
         stmt = stmt.where(Document.department_id == current_user.department_id)
     if category_id:
@@ -159,11 +513,7 @@ async def list_documents(
         stmt = stmt.where(Document.academic_year == academic_year)
 
     res = await db.execute(stmt)
-    docs = res.scalars().all()
-    for d in docs:
-        if d.versions:
-            d.latest_version = d.versions[0]
-    return docs
+    return [_attach_latest(document) for document in res.scalars().all()]
 
 
 @router.get("/search", response_model=DocumentSearchResponse)

@@ -1,6 +1,17 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { Search, Upload } from 'lucide-vue-next'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import {
+  Archive,
+  Download,
+  FileText,
+  Link2,
+  MoreHorizontal,
+  Pencil,
+  RotateCcw,
+  Search,
+  Trash2,
+  Upload,
+} from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
@@ -39,27 +50,47 @@ const api = useApi()
 const { user } = useAuth()
 const { data: categoryData } = await useAsyncData('document-categories', () => api<Category[]>('/documents/categories'))
 const { data: documentData, pending, error, refresh } = await useAsyncData('documents', () =>
-  api<WorkspaceDocument[]>('/documents', { query: { limit: 200 } }),
+  api<WorkspaceDocument[]>('/documents', { query: { limit: 200, include_archived: true } }),
 )
 
 const categories = computed(() => categoryData.value ?? [])
-const documents = computed(() => documentData.value ?? [])
+const allDocuments = computed(() => documentData.value ?? [])
+const showArchived = ref(false)
+const documents = computed(() =>
+  allDocuments.value.filter(document => document.is_archived === showArchived.value),
+)
+const archivedCount = computed(() => allDocuments.value.filter(document => document.is_archived).length)
 const departmentName = computed(() => user.value?.department?.name ?? 'Department workspace')
 
 const search = ref('')
 const category = ref('ALL')
 const year = ref('ALL')
 const selected = ref<WorkspaceDocument | null>(null)
+const openMenuId = ref('')
+const actionBusyId = ref('')
+const renameOpen = ref(false)
+const renameTarget = ref<WorkspaceDocument | null>(null)
+const renameTitle = ref('')
+const renaming = ref(false)
+const deleteOpen = ref(false)
+const deleteTarget = ref<WorkspaceDocument | null>(null)
+const deleting = ref(false)
+const versionOpen = ref(false)
+const versionTarget = ref<WorkspaceDocument | null>(null)
+const versionFile = ref<File | null>(null)
+const versionUploading = ref(false)
 const summaryLanguage = ref<'en' | 'km'>('en')
 const summaryDraftLanguage = ref<'en' | 'km' | null>(null)
 const uploadOpen = ref(false)
 const uploading = ref(false)
 const summarizing = ref(false)
+const uploadMode = ref<'file' | 'google'>('file')
 const uploadForm = ref({
   title: '',
   category_id: 'NONE',
   year: '2026–2027',
   file: null as File | null,
+  googleUrl: '',
 })
 
 const years = computed(() => [...new Set(documents.value.map(document => document.academic_year))].sort().reverse())
@@ -134,6 +165,7 @@ function textHasKhmer(value: string | null | undefined) {
 }
 
 function openDocument(document: WorkspaceDocument) {
+  closeMenu()
   selected.value = document
   const existingSummary = document.latest_version?.abstract_summary ?? ''
   summaryLanguage.value = document.latest_version?.contains_khmer ? 'km' : 'en'
@@ -148,33 +180,51 @@ function onFile(event: Event) {
 }
 
 function resetUpload() {
+  uploadMode.value = 'file'
   uploadForm.value = {
     title: '',
     category_id: 'NONE',
     year: '2026–2027',
     file: null,
+    googleUrl: '',
   }
 }
 
 async function addDocument() {
-  if (!uploadForm.value.file) {
+  if (uploadMode.value === 'file' && !uploadForm.value.file) {
     toast.error('Choose a file first.')
+    return
+  }
+  if (uploadMode.value === 'google' && !uploadForm.value.googleUrl.trim()) {
+    toast.error('Paste a Google Docs, Sheets, or Drive link first.')
     return
   }
   uploading.value = true
   try {
-    const formData = new FormData()
-    formData.append('file', uploadForm.value.file)
-    if (uploadForm.value.title.trim()) formData.append('title', uploadForm.value.title.trim())
-    if (uploadForm.value.category_id && uploadForm.value.category_id !== 'NONE') {
-      formData.append('category_id', uploadForm.value.category_id)
+    let created: WorkspaceDocument
+    if (uploadMode.value === 'google') {
+      created = await api<WorkspaceDocument>('/documents/import/google', {
+        method: 'POST',
+        body: {
+          url: uploadForm.value.googleUrl.trim(),
+          title: uploadForm.value.title.trim() || undefined,
+          category_id: uploadForm.value.category_id === 'NONE' ? undefined : uploadForm.value.category_id,
+          academic_year: uploadForm.value.year,
+        },
+      })
+    } else {
+      const formData = new FormData()
+      formData.append('file', uploadForm.value.file!)
+      if (uploadForm.value.title.trim()) formData.append('title', uploadForm.value.title.trim())
+      if (uploadForm.value.category_id && uploadForm.value.category_id !== 'NONE') {
+        formData.append('category_id', uploadForm.value.category_id)
+      }
+      formData.append('academic_year', uploadForm.value.year)
+      created = await api<WorkspaceDocument>('/documents/upload', {
+        method: 'POST',
+        body: formData,
+      })
     }
-    formData.append('academic_year', uploadForm.value.year)
-
-    const created = await api<WorkspaceDocument>('/documents/upload', {
-      method: 'POST',
-      body: formData,
-    })
     await refresh()
     uploadOpen.value = false
     resetUpload()
@@ -211,6 +261,153 @@ async function summarizeSelected() {
     summarizing.value = false
   }
 }
+
+function toggleMenu(documentId: string) {
+  openMenuId.value = openMenuId.value === documentId ? '' : documentId
+}
+
+function closeMenu() {
+  openMenuId.value = ''
+}
+
+function openRename(document: WorkspaceDocument) {
+  closeMenu()
+  renameTarget.value = document
+  renameTitle.value = document.title
+  renameOpen.value = true
+}
+
+async function renameDocument() {
+  const document = renameTarget.value
+  const title = renameTitle.value.trim()
+  if (!document || !title) {
+    toast.error('Enter a document title.')
+    return
+  }
+  renaming.value = true
+  try {
+    const updated = await api<WorkspaceDocument>(`/documents/${document.id}`, {
+      method: 'PATCH',
+      body: { title },
+    })
+    if (selected.value?.id === updated.id) selected.value = updated
+    renameOpen.value = false
+    renameTarget.value = null
+    await refresh()
+    toast.success('Document renamed.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not rename the document.')
+  } finally {
+    renaming.value = false
+  }
+}
+
+function openDelete(document: WorkspaceDocument) {
+  closeMenu()
+  deleteTarget.value = document
+  deleteOpen.value = true
+}
+
+async function deleteDocument() {
+  const document = deleteTarget.value
+  if (!document) return
+  deleting.value = true
+  try {
+    await api(`/documents/${document.id}`, { method: 'DELETE' })
+    if (selected.value?.id === document.id) selected.value = null
+    deleteOpen.value = false
+    deleteTarget.value = null
+    await refresh()
+    toast.success('Document deleted.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not delete the document.')
+  } finally {
+    deleting.value = false
+  }
+}
+
+async function toggleArchive(document: WorkspaceDocument) {
+  closeMenu()
+  actionBusyId.value = document.id
+  try {
+    const updated = await api<WorkspaceDocument>(`/documents/${document.id}/archive`, {
+      method: 'PATCH',
+      body: { is_archived: !document.is_archived },
+    })
+    if (selected.value?.id === updated.id) selected.value = updated
+    await refresh()
+    toast.success(updated.is_archived ? 'Document archived.' : 'Document restored.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not update the document.')
+  } finally {
+    actionBusyId.value = ''
+  }
+}
+
+function openVersion(document: WorkspaceDocument) {
+  closeMenu()
+  versionTarget.value = document
+  versionFile.value = null
+  versionOpen.value = true
+}
+
+function onVersionFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  versionFile.value = input.files?.[0] ?? null
+}
+
+async function uploadVersion() {
+  const document = versionTarget.value
+  if (!document || !versionFile.value) {
+    toast.error('Choose a file for the new version.')
+    return
+  }
+  versionUploading.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', versionFile.value)
+    const updated = await api<WorkspaceDocument>(`/documents/${document.id}/versions`, {
+      method: 'POST',
+      body: formData,
+    })
+    if (selected.value?.id === updated.id) selected.value = updated
+    versionOpen.value = false
+    versionTarget.value = null
+    versionFile.value = null
+    await refresh()
+    toast.success(`Version ${updated.current_version} uploaded.`)
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not upload the new version.')
+  } finally {
+    versionUploading.value = false
+  }
+}
+
+async function downloadDocument(document: WorkspaceDocument, versionId?: string) {
+  closeMenu()
+  actionBusyId.value = document.id
+  try {
+    const path = versionId
+      ? `/documents/${document.id}/download?version_id=${encodeURIComponent(versionId)}`
+      : `/documents/${document.id}/download`
+    const blob = await api<Blob>(path, { responseType: 'blob' })
+    const objectUrl = URL.createObjectURL(blob)
+    const anchor = window.document.createElement('a')
+    anchor.href = objectUrl
+    anchor.download = versionId
+      ? (selectedVersions.value.find(version => version.id === versionId)?.file_name ?? document.title)
+      : (document.latest_version?.file_name ?? document.title)
+    anchor.click()
+    URL.revokeObjectURL(objectUrl)
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Download failed.')
+  } finally {
+    actionBusyId.value = ''
+  }
+}
+
+onMounted(() => window.document.addEventListener('click', closeMenu))
+onUnmounted(() => window.document.removeEventListener('click', closeMenu))
 </script>
 
 <template>
@@ -258,6 +455,16 @@ async function summarizeSelected() {
         </div>
       </div>
 
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <Button variant="outline" size="sm" @click="showArchived = !showArchived">
+          <component :is="showArchived ? RotateCcw : Archive" class="h-3.5 w-3.5" />
+          {{ showArchived ? 'Back to active documents' : `Archived (${archivedCount})` }}
+        </Button>
+        <span v-if="showArchived" class="text-[12px] text-muted-foreground">
+          Archived documents are hidden from the active repository.
+        </span>
+      </div>
+
       <Card v-if="filteredDocuments.length" class="mt-4 overflow-hidden" data-testid="document-table">
         <Table>
           <TableHeader>
@@ -267,7 +474,7 @@ async function summarizeSelected() {
               <TableHead class="hidden lg:table-cell">Academic year</TableHead>
               <TableHead class="hidden text-right sm:table-cell">Version</TableHead>
               <TableHead class="hidden xl:table-cell">Updated</TableHead>
-              <TableHead class="w-16 pr-5 text-right">Open</TableHead>
+              <TableHead class="w-32 pr-5 text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -294,7 +501,49 @@ async function summarizeSelected() {
                 {{ formatDate(document.updated_at) }}
               </TableCell>
               <TableCell class="pr-5 text-right">
-                <Button variant="ghost" size="xs" @click="openDocument(document)">Open</Button>
+                <div class="relative inline-block text-left" @click.stop>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    :disabled="actionBusyId === document.id"
+                    :aria-label="`Actions for ${document.title}`"
+                    :aria-expanded="openMenuId === document.id"
+                    @click="toggleMenu(document.id)"
+                  >
+                    Actions
+                    <MoreHorizontal class="h-3.5 w-3.5" />
+                  </Button>
+                  <div
+                    v-if="openMenuId === document.id"
+                    class="absolute right-0 top-full z-30 mt-1 w-48 rounded-md border bg-card p-1 shadow-lg"
+                    role="menu"
+                  >
+                    <button type="button" class="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-secondary" role="menuitem" @click="openDocument(document)">
+                      <FileText class="h-3.5 w-3.5" />
+                      Open
+                    </button>
+                    <button type="button" class="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-secondary" role="menuitem" @click="openRename(document)">
+                      <Pencil class="h-3.5 w-3.5" />
+                      Rename
+                    </button>
+                    <button type="button" class="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-secondary" role="menuitem" @click="downloadDocument(document)">
+                      <Download class="h-3.5 w-3.5" />
+                      Download
+                    </button>
+                    <button v-if="!document.is_archived" type="button" class="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-secondary" role="menuitem" @click="openVersion(document)">
+                      <Upload class="h-3.5 w-3.5" />
+                      New version
+                    </button>
+                    <button type="button" class="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-secondary" role="menuitem" @click="toggleArchive(document)">
+                      <component :is="document.is_archived ? RotateCcw : Archive" class="h-3.5 w-3.5" />
+                      {{ document.is_archived ? 'Restore' : 'Archive' }}
+                    </button>
+                    <button type="button" class="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-[13px] text-negative transition-colors hover:bg-negative-soft" role="menuitem" @click="openDelete(document)">
+                      <Trash2 class="h-3.5 w-3.5" />
+                      Delete
+                    </button>
+                  </div>
+                </div>
               </TableCell>
             </TableRow>
           </TableBody>
@@ -307,10 +556,14 @@ async function summarizeSelected() {
 
       <Card v-else class="mt-4 p-5">
         <EmptyState
-          :title="documents.length ? 'No documents match those filters' : 'No documents yet'"
-          :description="documents.length ? 'Clear the search or choose a different category and academic year.' : 'Upload the first document to build the department repository.'"
+          :title="documents.length
+            ? 'No documents match those filters'
+            : showArchived ? 'No archived documents' : 'No documents yet'"
+          :description="documents.length
+            ? 'Clear the search or choose a different category and academic year.'
+            : showArchived ? 'Archive a document to see it here.' : 'Upload the first document to build the department repository.'"
         >
-          <Button v-if="!documents.length" size="sm" class="mt-3" @click="uploadOpen = true">
+          <Button v-if="!documents.length && !showArchived" size="sm" class="mt-3" @click="uploadOpen = true">
             <Upload class="h-4 w-4" />
             Upload document
           </Button>
@@ -390,6 +643,25 @@ async function summarizeSelected() {
         </DialogHeader>
 
         <div v-if="selected" class="min-w-0 space-y-5">
+          <div class="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" @click="downloadDocument(selected)">
+              <Download class="h-3.5 w-3.5" />
+              Download
+            </Button>
+            <Button v-if="!selected.is_archived" variant="outline" size="sm" @click="openVersion(selected)">
+              <Upload class="h-3.5 w-3.5" />
+              New version
+            </Button>
+            <Button variant="ghost" size="sm" @click="toggleArchive(selected)">
+              <component :is="selected.is_archived ? RotateCcw : Archive" class="h-3.5 w-3.5" />
+              {{ selected.is_archived ? 'Restore' : 'Archive' }}
+            </Button>
+            <Button variant="ghost" size="sm" class="text-negative" @click="openDelete(selected)">
+              <Trash2 class="h-3.5 w-3.5" />
+              Delete
+            </Button>
+          </div>
+
           <div v-if="selected.drive_file_id" class="flex flex-col gap-3 rounded-md border border-brand/20 bg-brand-soft px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div class="min-w-0">
               <p class="text-[13px] font-medium text-brand">Archived from a meeting</p>
@@ -493,6 +765,10 @@ async function summarizeSelected() {
                 <span class="font-medium">v{{ version.version_number }}</span>
                 <span class="min-w-0 flex-1 truncate text-muted-foreground">{{ version.file_name }}</span>
                 <span class="tabular-nums shrink-0 text-muted-foreground">{{ formatDate(version.created_at) }}</span>
+                <Button variant="ghost" size="xs" :disabled="actionBusyId === selected?.id" @click="selected && downloadDocument(selected, version.id)">
+                  <Download class="h-3.5 w-3.5" />
+                  Download
+                </Button>
               </div>
             </div>
           </div>
@@ -504,17 +780,42 @@ async function summarizeSelected() {
       </DialogContent>
     </Dialog>
 
-    <Dialog v-model:open="uploadOpen">
+    <Dialog :open="uploadOpen" @update:open="value => { uploadOpen = value; if (!value) resetUpload() }">
       <DialogContent class="max-w-lg" data-testid="upload-document">
         <DialogHeader>
           <DialogTitle>Add a document</DialogTitle>
           <DialogDescription>
-            The file is parsed, checksummed and stored by the API. An optional AI summary can be generated later from the document panel.
+            Upload a file or import a Google Docs, Sheets, Slides, or Drive link. An optional AI summary can be generated later from the document panel.
           </DialogDescription>
         </DialogHeader>
 
+        <div class="grid grid-cols-2 gap-1 rounded-md border bg-muted/30 p-1" role="tablist" aria-label="Document source">
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="uploadMode === 'file'"
+            class="flex h-8 items-center justify-center gap-2 rounded text-[13px] font-medium transition-colors"
+            :class="uploadMode === 'file' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+            @click="uploadMode = 'file'"
+          >
+            <Upload class="h-3.5 w-3.5" />
+            Upload file
+          </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="uploadMode === 'google'"
+            class="flex h-8 items-center justify-center gap-2 rounded text-[13px] font-medium transition-colors"
+            :class="uploadMode === 'google' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+            @click="uploadMode = 'google'"
+          >
+            <Link2 class="h-3.5 w-3.5" />
+            Google Drive link
+          </button>
+        </div>
+
         <div class="space-y-4">
-          <div class="space-y-1.5">
+          <div v-if="uploadMode === 'file'" class="space-y-1.5">
             <Label for="document-file">File</Label>
             <input id="document-file" type="file" class="sr-only" @change="onFile" />
             <label
@@ -529,8 +830,23 @@ async function summarizeSelected() {
             </label>
           </div>
 
+          <div v-else class="space-y-1.5">
+            <Label for="google-drive-url">Google Docs, Sheets, Slides or Drive link</Label>
+            <Input
+              id="google-drive-url"
+              v-model="uploadForm.googleUrl"
+              placeholder="https://docs.google.com/document/d/..."
+            />
+            <p class="text-[12px] leading-relaxed text-muted-foreground">
+              The file must be viewable by anyone with the link. Google Docs become DOCX, Sheets become XLSX, and Slides become PDF.
+            </p>
+          </div>
+
           <div class="space-y-1.5">
-            <Label for="document-title">Title</Label>
+            <Label for="document-title">
+              Title
+              <span class="font-normal text-muted-foreground">(optional)</span>
+            </Label>
             <Input id="document-title" v-model="uploadForm.title" placeholder="Document title" />
           </div>
 
@@ -554,7 +870,79 @@ async function summarizeSelected() {
         <DialogFooter>
           <Button variant="outline" :disabled="uploading" @click="uploadOpen = false; resetUpload()">Cancel</Button>
           <Button :disabled="uploading" @click="addDocument">
-            {{ uploading ? 'Uploading…' : 'Add document' }}
+            {{ uploading
+              ? (uploadMode === 'google' ? 'Importing…' : 'Uploading…')
+              : (uploadMode === 'google' ? 'Import from Google' : 'Add document') }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="renameOpen">
+      <DialogContent class="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Rename document</DialogTitle>
+          <DialogDescription>This title appears in the repository, search results, and exports.</DialogDescription>
+        </DialogHeader>
+        <div class="space-y-1.5">
+          <Label for="rename-document-title">Title</Label>
+          <Input id="rename-document-title" v-model="renameTitle" @keyup.enter="renameDocument" />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" :disabled="renaming" @click="renameOpen = false">Cancel</Button>
+          <Button :disabled="renaming || !renameTitle.trim()" @click="renameDocument">
+            {{ renaming ? 'Saving…' : 'Save name' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="deleteOpen">
+      <DialogContent class="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Delete this document?</DialogTitle>
+          <DialogDescription>
+            This permanently removes the document and all of its stored versions. This cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        <div class="rounded-md border border-negative/20 bg-negative-soft px-3 py-2.5 text-[13px] text-negative">
+          {{ deleteTarget?.title }}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" :disabled="deleting" @click="deleteOpen = false">Cancel</Button>
+          <Button variant="destructive" :disabled="deleting" @click="deleteDocument">
+            {{ deleting ? 'Deleting…' : 'Delete document' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="versionOpen">
+      <DialogContent class="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Upload a new version</DialogTitle>
+          <DialogDescription>
+            {{ versionTarget?.title }} · currently v{{ versionTarget?.current_version }}. Previous versions remain downloadable.
+          </DialogDescription>
+        </DialogHeader>
+        <div class="space-y-1.5">
+          <Label for="document-version-file">File</Label>
+          <input id="document-version-file" type="file" class="sr-only" @change="onVersionFile" />
+          <label
+            for="document-version-file"
+            class="flex min-h-[88px] cursor-pointer flex-col items-center justify-center gap-1 rounded-md border border-dashed border-input bg-muted/30 px-4 py-4 text-center transition-colors hover:bg-muted/60"
+          >
+            <Upload class="h-4 w-4 text-muted-foreground" />
+            <span class="text-[13px] font-medium">
+              {{ versionFile?.name ?? 'Choose the new file' }}
+            </span>
+            <span class="text-[13px] text-muted-foreground">PDF, DOCX, XLSX or CSV · up to 50 MB</span>
+          </label>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" :disabled="versionUploading" @click="versionOpen = false">Cancel</Button>
+          <Button :disabled="versionUploading || !versionFile" @click="uploadVersion">
+            {{ versionUploading ? 'Uploading…' : 'Upload version' }}
           </Button>
         </DialogFooter>
       </DialogContent>

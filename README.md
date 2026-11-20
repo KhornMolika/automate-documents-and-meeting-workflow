@@ -47,7 +47,7 @@ docker-compose.yml
 
 - **Overview** — next meeting, open/overdue tasks, recent documents
 - **Meetings** — create meetings, add content, review and publish minutes
-- **Documents** — repository, uploads, search, archived minutes
+- **Documents** — repository, uploads, version history, download, rename, archive/restore, Google Docs/Sheets/Slides import, archived minutes
 - **Tasks** — action items with status tracking and a read-only decision log
 
 ---
