@@ -17,7 +17,9 @@ export default defineNuxtConfig({
         { name: 'description', content: 'AI-assisted Document and Meeting Management Ecosystem for ACLEDA University of Business.' }
       ],
       link: [
-        { rel: 'icon', type: 'image/png', href: '/aub-logo.png' }
+        { rel: 'icon', type: 'image/png', href: '/favicon.png', sizes: '512x512' },
+        { rel: 'icon', type: 'image/x-icon', href: '/favicon.ico', sizes: '32x32' },
+        { rel: 'apple-touch-icon', href: '/apple-touch-icon.png', sizes: '180x180' },
       ]
     }
   },
