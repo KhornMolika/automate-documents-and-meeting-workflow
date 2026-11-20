@@ -66,6 +66,53 @@ docker-compose.yml
 
 ## Quick start
 
+### One-command local start (recommended)
+
+Requirements: **Python 3.11+**, **Node.js 20+**, **npm**, **ffmpeg**, and `curl`/`lsof`.
+
+```bash
+cd /path/to/automate-documents-and-meeting-workflow
+./run.sh
+```
+
+The script:
+
+- creates the Python virtual environments and installs dependencies if missing;
+- installs the frontend dependencies if `node_modules` is missing;
+- creates `backend/.env` and `speech-service/.env` if missing;
+- starts the backend, speech service, and frontend;
+- waits until each service is healthy;
+- reuses services that are already running on the expected ports;
+- writes logs to `logs/` and stops the services it started on `Ctrl+C`.
+
+Default URLs:
+
+| Service | URL |
+|---|---|
+| App | `http://127.0.0.1:3000` |
+| API reference | `http://127.0.0.1:8000/docs` |
+| Backend health | `http://127.0.0.1:8000/health` |
+| Speech service | `http://127.0.0.1:8002/health` |
+
+Default login: `admin@aub.edu.kh` / `Admin@AUB2026`
+
+Useful options:
+
+```bash
+# Do not open the browser automatically
+OPEN_BROWSER=0 ./run.sh
+
+# Skip the local speech service (transcript upload still works)
+SKIP_SPEECH=1 ./run.sh
+
+# Use different ports
+BACKEND_PORT=8010 FRONTEND_PORT=3010 SPEECH_PORT=8012 ./run.sh
+```
+
+If a port is occupied by another unrelated process, the script stops with a clear message. Stop that process or choose different ports.
+
+To run each service manually instead:
+
 ### 1. Backend
 
 ```bash
