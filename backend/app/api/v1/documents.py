@@ -1,8 +1,8 @@
 import os
 import time
 import json
-from typing import List, Optional, Any
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status
+from typing import List, Optional, Any, Literal
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query, status
 from sqlalchemy import select, or_, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -222,6 +222,7 @@ async def list_categories(
 @router.post("/{document_id}/summarize", response_model=DocumentOut)
 async def summarize_document(
     document_id: str,
+    language: Literal["en", "km"] = Query("en"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
@@ -240,7 +241,9 @@ async def summarize_document(
         raise HTTPException(status_code=400, detail="No extracted text is available to summarize.")
 
     try:
-        result = await llm_service.summarize_document(document.title, version.extracted_text)
+        result = await llm_service.summarize_document(
+            document.title, version.extracted_text, language=language
+        )
     except AIServiceUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

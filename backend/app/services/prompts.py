@@ -3,7 +3,14 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 
-def build_document_summary_prompt(title: str, text: str) -> str:
+def build_document_summary_prompt(title: str, text: str, language: str = "en") -> str:
+    language_name = "Khmer" if language == "km" else "English"
+    khmer_instruction = (
+        " Use natural Khmer: do not insert spaces between Khmer words, and use the "
+        "Khmer sentence-ending mark ។."
+        if language == "km"
+        else ""
+    )
     return f"""
 You are an institutional document intelligence engine for ACLEDA University of Business (AUB).
 Analyze the following document and output valid JSON only.
@@ -13,8 +20,8 @@ Document Content:
 \"\"\"{text[:20000]}\"\"\"
 
 Generate:
-1. "abstract_summary": A formal, concise 150-250 word executive summary describing the purpose, scope, and key directives.
-2. "entities": A JSON object containing signees, effective dates, responsible departments, and keywords.
+1. "abstract_summary": A formal, concise 150-250 word executive summary describing the purpose, scope, and key directives, written in {language_name}.{khmer_instruction}
+2. "entities": A JSON object containing signees, effective dates, responsible departments, and keywords. Keep proper names as written; write descriptive values in {language_name} where natural.
 
 Return ONLY raw JSON with keys "abstract_summary" and "entities".
 """

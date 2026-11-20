@@ -161,7 +161,23 @@ async def test_document_and_meeting_lifecycle(client: AsyncClient, db_session: A
     doc_data = upload_res.json()
     assert doc_data["title"] == "AUB Research Policy 2026"
     assert doc_data["current_version"] == 1
+    assert doc_data["latest_version"]["contains_khmer"] is False
     doc_id = doc_data["id"]
+
+    bad_summary = await client.post(
+        f"/api/v1/documents/{doc_id}/summarize?language=fr", headers=headers
+    )
+    assert bad_summary.status_code == 422
+
+    khmer_csv = "ចំណងជើង,អ្នកទទួល\nសាកល្បង,នាយកដ្ឋាន\n".encode("utf-8")
+    khmer_upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("khmer_policy.csv", khmer_csv, "text/csv")},
+        data={"title": "Khmer Policy", "academic_year": "2026-2027"},
+        headers=headers,
+    )
+    assert khmer_upload.status_code == 200
+    assert khmer_upload.json()["latest_version"]["contains_khmer"] is True
 
     dup_res = await client.post("/api/v1/documents/upload", files=files, data=data, headers=headers)
     assert dup_res.status_code == 409

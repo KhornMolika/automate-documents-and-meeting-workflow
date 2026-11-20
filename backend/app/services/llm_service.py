@@ -175,23 +175,35 @@ class LLMService:
             f"{self.describe()} does not support plain generation through _generate_json."
         )
 
-    async def summarize_document(self, title: str, text: str) -> Dict[str, Any]:
+    async def summarize_document(
+        self,
+        title: str,
+        text: str,
+        language: str = "en",
+    ) -> Dict[str, Any]:
         if not text.strip():
             raise AIServiceUnavailable("No extracted text is available to summarize.")
+        output_language = "km" if language == "km" else "en"
         if self.provider == "gemini":
-            return await gemini_service.summarize_document(title, text)
-
-        raw = await self._generate_json(build_document_summary_prompt(title, text))
-        try:
-            data = _extract_json(raw)
-        except Exception as exc:
-            raise AIServiceUnavailable(
-                f"{self.describe()} returned an invalid summary: {exc}"
-            ) from exc
+            data = await gemini_service.summarize_document(
+                title, text, language=output_language
+            )
+        else:
+            raw = await self._generate_json(
+                build_document_summary_prompt(title, text, language=output_language)
+            )
+            try:
+                data = _extract_json(raw)
+            except Exception as exc:
+                raise AIServiceUnavailable(
+                    f"{self.describe()} returned an invalid summary: {exc}"
+                ) from exc
 
         summary = data.get("abstract_summary")
         if not isinstance(summary, str) or not summary.strip():
             raise AIServiceUnavailable(f"{self.describe()} did not return an abstract_summary.")
+        if output_language == "km":
+            data["abstract_summary"] = normalize_khmer_text(summary)
         return data
 
     async def synthesize_meeting_mom(

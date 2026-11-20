@@ -133,14 +133,19 @@ export async function seedCompletedMeeting(request: APIRequestContext, token: st
   return meeting
 }
 
-export async function seedDocument(request: APIRequestContext, token: string, title: string) {
+export async function seedDocument(
+  request: APIRequestContext,
+  token: string,
+  title: string,
+  content?: string,
+) {
   const response = await request.post(`${API}/documents/upload`, {
     headers: { Authorization: `Bearer ${token}` },
     multipart: {
       file: {
         name: `e2e_${Date.now()}.csv`,
         mimeType: 'text/csv',
-        buffer: Buffer.from(`Policy,Owner\n${title},Academic Affairs\n`),
+        buffer: Buffer.from(content ?? `Policy,Owner\n${title},Academic Affairs\n`),
       },
       title,
       academic_year: '2026-2027',

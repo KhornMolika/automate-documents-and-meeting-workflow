@@ -65,7 +65,12 @@ test.describe('Live services', () => {
     test.setTimeout(240_000)
     const token = await authenticate(page, request)
     const title = uniqueTitle('E2E Gemini Document')
-    await seedDocument(request, token, title)
+    await seedDocument(
+      request,
+      token,
+      title,
+      `ចំណងជើង,អ្នកទទួល\n${title},នាយកដ្ឋានវិទ្យាសាស្ត្រ\n`,
+    )
 
     await page.goto('/documents')
     await page.waitForLoadState('networkidle')
@@ -73,10 +78,11 @@ test.describe('Live services', () => {
     const row = page.getByTestId('document-table').locator('tbody tr').first()
     await row.getByRole('button', { name: 'Open' }).click()
     const dialog = page.getByTestId('document-detail')
-    await dialog.getByRole('button', { name: 'Generate summary' }).click()
+    await expect(dialog.getByRole('button', { name: 'ខ្មែរ' })).toHaveAttribute('aria-pressed', 'true')
+    await dialog.getByRole('button', { name: /Generate summary/ }).click()
 
     await expect(dialog.getByTestId('document-summary')).toBeVisible({ timeout: 200_000 })
-    await expect(dialog.getByTestId('document-summary')).not.toHaveText('')
+    await expect(dialog.getByTestId('document-summary')).toHaveText(/[\u1780-\u17FF]/)
   })
 
   test('generates an AI minutes draft with Gemini', async ({ page, request }) => {

@@ -47,6 +47,7 @@ export interface DocumentVersion {
   sha256_checksum: string
   abstract_summary?: string | null
   extracted_entities?: string | null
+  contains_khmer?: boolean
   created_at: string
 }
 

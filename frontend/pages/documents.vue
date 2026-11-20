@@ -50,6 +50,8 @@ const search = ref('')
 const category = ref('ALL')
 const year = ref('ALL')
 const selected = ref<WorkspaceDocument | null>(null)
+const summaryLanguage = ref<'en' | 'km'>('en')
+const summaryDraftLanguage = ref<'en' | 'km' | null>(null)
 const uploadOpen = ref(false)
 const uploading = ref(false)
 const summarizing = ref(false)
@@ -123,11 +125,21 @@ const lastUpdate = computed(() => {
   return dates.length ? formatDate(new Date(Math.max(...dates))) : '—'
 })
 
+const selectedSummary = computed(() => selected.value?.latest_version?.abstract_summary ?? '')
 const selectedEntities = computed(() => parseEntities(selected.value?.latest_version?.extracted_entities))
 const selectedVersions = computed(() => selected.value?.versions ?? [])
 
+function textHasKhmer(value: string | null | undefined) {
+  return /[\u1780-\u17FF]/.test(value ?? '')
+}
+
 function openDocument(document: WorkspaceDocument) {
   selected.value = document
+  const existingSummary = document.latest_version?.abstract_summary ?? ''
+  summaryLanguage.value = document.latest_version?.contains_khmer ? 'km' : 'en'
+  summaryDraftLanguage.value = existingSummary
+    ? (textHasKhmer(existingSummary) ? 'km' : 'en')
+    : null
 }
 
 function onFile(event: Event) {
@@ -182,12 +194,17 @@ async function summarizeSelected() {
   if (!selected.value) return
   summarizing.value = true
   try {
-    const updated = await api<WorkspaceDocument>(`/documents/${selected.value.id}/summarize`, {
-      method: 'POST',
-    })
+    const language = summaryLanguage.value
+    const updated = await api<WorkspaceDocument>(
+      `/documents/${selected.value.id}/summarize?language=${language}`,
+      { method: 'POST' },
+    )
     selected.value = updated
+    summaryDraftLanguage.value = language
     await refresh()
-    toast.success('Document summary generated.')
+    toast.success(
+      `Document summary generated in ${language === 'km' ? 'Khmer' : 'English'}.`,
+    )
   } catch (err: any) {
     toast.error(err?.data?.detail ?? 'Summary generation failed.')
   } finally {
@@ -384,16 +401,66 @@ async function summarizeSelected() {
           </div>
 
           <div class="rounded-md border bg-muted/40 p-4">
-            <p class="text-[13px] font-medium text-muted-foreground">Summary</p>
-            <p v-if="selected.latest_version?.abstract_summary" data-testid="document-summary" class="mt-1.5 break-words text-sm leading-relaxed">
-              {{ selected.latest_version.abstract_summary }}
+            <div class="flex flex-wrap items-center gap-2">
+              <p class="text-[13px] font-medium text-muted-foreground">Summary</p>
+              <div
+                class="inline-flex rounded-md border bg-card/60 p-0.5"
+                role="group"
+                aria-label="Summary language"
+              >
+                <button
+                  type="button"
+                  class="rounded px-2.5 py-1 text-[12px] font-medium transition-colors"
+                  :class="summaryLanguage === 'en' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+                  :aria-pressed="summaryLanguage === 'en'"
+                  @click="summaryLanguage = 'en'"
+                >
+                  English
+                </button>
+                <button
+                  type="button"
+                  class="rounded px-2.5 py-1 font-khmer text-[12px] font-medium transition-colors"
+                  :class="summaryLanguage === 'km' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+                  :aria-pressed="summaryLanguage === 'km'"
+                  @click="summaryLanguage = 'km'"
+                >
+                  ខ្មែរ
+                </button>
+              </div>
+              <Button
+                v-if="selectedSummary"
+                variant="ghost"
+                size="sm"
+                class="ml-auto text-brand"
+                :disabled="summarizing"
+                @click="summarizeSelected"
+              >
+                <span v-if="summarizing" class="h-3 w-3 animate-spin rounded-full border-2 border-brand border-t-transparent" />
+                {{ summarizing ? 'Regenerating…' : `Regenerate in ${summaryLanguage === 'km' ? 'Khmer' : 'English'}` }}
+              </Button>
+            </div>
+
+            <p
+              v-if="selectedSummary"
+              data-testid="document-summary"
+              class="mt-2 break-words text-sm leading-relaxed"
+              :class="summaryDraftLanguage === 'km' ? 'font-khmer' : ''"
+            >
+              {{ selectedSummary }}
             </p>
             <div v-else class="mt-2 flex flex-col items-start gap-2">
               <p class="text-[13px] text-muted-foreground">No AI summary has been generated for this document.</p>
               <Button variant="outline" size="sm" :disabled="summarizing" @click="summarizeSelected">
-                {{ summarizing ? 'Generating…' : 'Generate summary' }}
+                {{ summarizing ? 'Generating…' : `Generate summary in ${summaryLanguage === 'km' ? 'Khmer' : 'English'}` }}
               </Button>
             </div>
+
+            <p
+              v-if="selectedSummary && summaryDraftLanguage && summaryDraftLanguage !== summaryLanguage"
+              class="mt-2 text-[12px] text-muted-foreground"
+            >
+              Current summary is in {{ summaryDraftLanguage === 'km' ? 'Khmer' : 'English' }}. Regenerate to apply {{ summaryLanguage === 'km' ? 'Khmer' : 'English' }}.
+            </p>
           </div>
 
           <div v-if="selectedEntities.length">

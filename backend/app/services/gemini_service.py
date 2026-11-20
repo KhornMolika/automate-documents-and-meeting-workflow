@@ -156,10 +156,17 @@ class GeminiService:
 
         raise AIServiceUnavailable(last_error)
 
-    async def summarize_document(self, title: str, text: str) -> Dict[str, Any]:
+    async def summarize_document(
+        self,
+        title: str,
+        text: str,
+        language: str = "en",
+    ) -> Dict[str, Any]:
         if not text.strip():
             raise AIServiceUnavailable("No extracted text is available to summarize.")
-        data = await self._generate_json(build_document_summary_prompt(title, text))
+        data = await self._generate_json(
+            build_document_summary_prompt(title, text, language=language)
+        )
         if not isinstance(data.get("abstract_summary"), str) or not data["abstract_summary"].strip():
             raise AIServiceUnavailable("Gemini did not return an abstract_summary.")
         return data

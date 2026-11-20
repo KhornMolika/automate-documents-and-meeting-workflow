@@ -21,6 +21,7 @@ class DocumentVersionOut(BaseModel):
     sha256_checksum: str
     abstract_summary: Optional[str] = None
     extracted_entities: Optional[str] = None
+    contains_khmer: bool = False
     created_at: datetime
 
 

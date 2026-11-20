@@ -57,3 +57,10 @@ class DocumentVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     document = relationship("Document", back_populates="versions")
+
+    @property
+    def contains_khmer(self) -> bool:
+        return any(
+            "\u1780" <= character <= "\u17ff"
+            for character in (self.extracted_text or "")
+        )
