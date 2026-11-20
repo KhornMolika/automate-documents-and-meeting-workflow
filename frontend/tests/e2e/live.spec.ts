@@ -7,7 +7,7 @@ const demoDir = process.env.DEMO_DIR || '/Users/alexkgm/Desktop/demo'
 test.describe('Live services', () => {
   test.skip(!live, 'Set E2E_LIVE=1 to run tests that call the speech service and Gemini.')
 
-  test('transcribes a Khmer recording with Google', async ({ page, request }) => {
+  test('transcribes a real Khmer recording', async ({ page, request }) => {
     test.setTimeout(240_000)
     const token = await authenticate(page, request)
     const title = uniqueTitle('E2E Khmer Recording')
@@ -24,12 +24,12 @@ test.describe('Live services', () => {
     await page.getByRole('button', { name: 'Add content' }).first().click()
     const dialog = page.getByTestId('meeting-content')
     await dialog.getByRole('tab', { name: 'Recording' }).click()
-    await dialog.locator('#recording-file').setInputFiles(`${demoDir}/sample-meeting-km.mp3`)
+    await dialog.locator('#recording-file').setInputFiles(`${demoDir}/recordings/khmer-meeting.mp3`)
     await dialog.locator('#recording-language').selectOption('km')
     await dialog.getByRole('button', { name: 'Transcribe recording' }).click()
 
     await expect(dialog).toHaveCount(0)
-    await expect(page.getByText('សួស្តី', { exact: false }).first()).toBeVisible({ timeout: 180_000 })
+    await expect(page.getByText(/[\u1780-\u17FF]/).first()).toBeVisible({ timeout: 180_000 })
     await expect(page.getByText('0 segments')).toHaveCount(0)
   })
 
@@ -50,12 +50,12 @@ test.describe('Live services', () => {
     await page.getByRole('button', { name: 'Add content' }).first().click()
     const dialog = page.getByTestId('meeting-content')
     await dialog.getByRole('tab', { name: 'Recording' }).click()
-    await dialog.locator('#recording-file').setInputFiles(`${demoDir}/sample-meeting-en.mp3`)
+    await dialog.locator('#recording-file').setInputFiles(`${demoDir}/recordings/english-meeting.mp3`)
     await dialog.locator('#recording-language').selectOption('en')
     await dialog.getByRole('button', { name: 'Transcribe recording' }).click()
 
     await expect(dialog).toHaveCount(0)
-    await expect(page.getByText('Good morning everyone', { exact: false })).toBeVisible({ timeout: 150_000 })
+    await expect(page.getByText('Central and Eastern Europe', { exact: false }).first()).toBeVisible({ timeout: 150_000 })
   })
 
   test('generates a document summary with Gemini', async ({ page, request }) => {

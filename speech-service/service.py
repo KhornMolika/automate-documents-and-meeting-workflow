@@ -1,5 +1,6 @@
 import base64
 import io
+import logging
 import os
 import subprocess
 import tempfile
@@ -19,6 +20,8 @@ from engine.segmenter import segment_pcm
 from engine.translation import KhmerTranslator
 
 load_dotenv(Path(__file__).with_name(".env"))
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AUB Local Speech & Translation Engine",
@@ -176,7 +179,13 @@ def transcribe_pcm(pcm_bytes: bytes, requested: str, translate: bool) -> Dict[st
 
     try:
         if requested == "km" and GEMINI_API_KEY:
-            return transcribe_with_gemini(normalized, translate)
+            try:
+                return transcribe_with_gemini(normalized, translate)
+            except Exception as exc:
+                logger.warning(
+                    "Gemini Khmer transcription failed; falling back to the local model: %s",
+                    exc,
+                )
 
         if requested == "km":
             result = khmer_asr.transcribe(normalized)

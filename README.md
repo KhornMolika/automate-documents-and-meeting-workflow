@@ -211,13 +211,23 @@ npm run test:e2e:live   # real Khmer + English recordings, Gemini transcription 
 
 The default Playwright suite runs against the real backend at `http://localhost:8000` and uses Chrome. The live suite additionally requires:
 
-- the speech service on `SPEECH_SERVICE_URL` (default `http://localhost:8001`)
-- `GEMINI_API_KEY` in `speech-service/.env` for Khmer transcription
+- the speech service on `SPEECH_SERVICE_URL` (the local `run.sh` uses `http://127.0.0.1:8002`)
+- `GEMINI_API_KEY` in `speech-service/.env` for Khmer transcription (the service falls back to the local Khmer model if Google is unavailable)
 - `GEMINI_API_KEY` in `backend/.env` for AI minutes and document summaries
 - `DEMO_DIR` pointing to the demo files (default `/Users/alexkgm/Desktop/demo`)
 
+The default demo folder contains real, publicly licensed recordings and ready-to-import transcripts:
+
+```text
+demo/recordings/khmer-meeting.mp4
+demo/recordings/english-meeting.mp4
+demo/transcripts/english-meeting.vtt
+demo/transcripts/khmer-meeting.txt
+demo/documents/research-methodology-proposal.pdf
+```
+
 The live suite covers:
-- Khmer recording → Google transcription
+- Khmer recording → Google transcription, with local Khmer fallback
 - English recording → local faster-whisper
 - AI minutes draft with source transcript
 - AI document summary
