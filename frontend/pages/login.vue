@@ -1,22 +1,35 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import { Eye, EyeOff } from 'lucide-vue-next'
 import { useAuth } from '~/composables/useAuth'
 import { Button } from '~/components/ui/button'
 import { Card } from '~/components/ui/card'
 import { Input } from '~/components/ui/input'
 import { Label } from '~/components/ui/label'
+import { safeRedirectPath } from '~/lib/auth'
 
 definePageMeta({ layout: false })
 useHead({ title: 'Sign in · ACLEDA University' })
 
-const email = ref('admin@aub.edu.kh')
-const password = ref(import.meta.dev ? 'Admin@AUB2026' : '')
+const route = useRoute()
+const isDev = import.meta.dev
+const email = ref(isDev ? 'admin@aub.edu.kh' : '')
+const password = ref(isDev ? 'Admin@AUB2026' : '')
 const pending = ref(false)
 const error = ref('')
-const isDev = import.meta.dev
 const copied = ref(false)
+const showPassword = ref(false)
+const capsLock = ref(false)
 const config = useRuntimeConfig()
 const { login } = useAuth()
+
+const sessionExpired = computed(() => route.query.reason === 'session-expired')
+const redirectTarget = computed(() => safeRedirectPath(route.query.redirect))
+
+function updateCapsLock(event: KeyboardEvent) {
+  capsLock.value = event.getModifierState?.('CapsLock') ?? false
+}
 
 async function copyCredentials() {
   await navigator.clipboard.writeText('admin@aub.edu.kh / Admin@AUB2026')
@@ -29,7 +42,7 @@ async function submit() {
   error.value = ''
   try {
     await login(email.value, password.value)
-    await navigateTo('/', { replace: true })
+    await navigateTo(redirectTarget.value, { replace: true })
   } catch (err: any) {
     error.value = err?.data?.detail ?? 'Unable to sign in. Check your email and password.'
   } finally {
@@ -49,6 +62,14 @@ async function submit() {
         </p>
       </div>
 
+      <div
+        v-if="sessionExpired"
+        class="mb-4 rounded-md border border-warning/20 bg-warning-soft px-4 py-3 text-[13px] leading-relaxed text-warning"
+        role="status"
+      >
+        Your session expired. Sign in again to continue where you left off.
+      </div>
+
       <Card class="p-6">
         <form class="space-y-4" @submit.prevent="submit">
           <div class="space-y-1.5">
@@ -58,29 +79,58 @@ async function submit() {
               v-model="email"
               type="email"
               autocomplete="username"
+              inputmode="email"
+              autofocus
               required
               placeholder="name@aub.edu.kh"
+              :aria-invalid="Boolean(error)"
             />
           </div>
           <div class="space-y-1.5">
             <Label for="password">Password</Label>
-            <Input
-              id="password"
-              v-model="password"
-              type="password"
-              autocomplete="current-password"
-              required
-              placeholder="Your password"
-            />
+            <div class="relative">
+              <Input
+                id="password"
+                v-model="password"
+                :type="showPassword ? 'text' : 'password'"
+                autocomplete="current-password"
+                required
+                placeholder="Your password"
+                class="pr-10"
+                :aria-invalid="Boolean(error)"
+                @keydown="updateCapsLock"
+                @keyup="updateCapsLock"
+              />
+              <button
+                type="button"
+                class="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                :aria-label="showPassword ? 'Hide password' : 'Show password'"
+                @click="showPassword = !showPassword"
+              >
+                <EyeOff v-if="showPassword" class="h-4 w-4" />
+                <Eye v-else class="h-4 w-4" />
+              </button>
+            </div>
+            <p v-if="capsLock" class="text-[12px] text-warning" role="status">Caps Lock is on.</p>
           </div>
 
-          <p v-if="error" class="rounded-md border border-negative/20 bg-negative-soft px-3 py-2 text-[13px] text-negative">
+          <p
+            v-if="error"
+            class="rounded-md border border-negative/20 bg-negative-soft px-3 py-2 text-[13px] text-negative"
+            role="alert"
+            aria-live="polite"
+          >
             {{ error }}
           </p>
 
           <Button type="submit" class="w-full" :disabled="pending">
+            <span v-if="pending" class="h-3 w-3 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
             {{ pending ? 'Signing in…' : 'Sign in' }}
           </Button>
+
+          <p class="text-center text-[12px] text-muted-foreground">
+            Accounts are created by an administrator.
+          </p>
         </form>
       </Card>
 

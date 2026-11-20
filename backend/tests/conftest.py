@@ -12,6 +12,8 @@ os.environ["LLM_PROVIDER"] = "gemini"
 os.environ["GEMINI_API_KEY"] = ""
 
 from app.core.database import Base, get_db
+from app.core.security import get_password_hash
+from app.models.user import Role, User
 from app.main import app
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///./test_aub_workflow.db"
@@ -27,6 +29,27 @@ async def setup_test_db():
     yield
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+
+
+@pytest.fixture(autouse=True)
+async def seed_test_admin(setup_test_db):
+    async with TestingSessionLocal() as session:
+        admin_role = Role(role_name="System Admin", description="Test administrator")
+        staff_role = Role(role_name="Staff", description="Test staff")
+        session.add_all([admin_role, staff_role])
+        await session.flush()
+        session.add(
+            User(
+                email="admin@aub.edu.kh",
+                hashed_password=get_password_hash("Admin@AUB2026"),
+                full_name="Test Administrator",
+                student_or_staff_id="TEST-ADMIN",
+                is_active=True,
+                is_superuser=True,
+                roles=[admin_role],
+            )
+        )
+        await session.commit()
 
 
 @pytest.fixture

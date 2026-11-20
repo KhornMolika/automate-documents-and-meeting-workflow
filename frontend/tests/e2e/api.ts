@@ -2,12 +2,20 @@ import { expect, type APIRequestContext, type Page } from '@playwright/test'
 
 const API = 'http://127.0.0.1:8000/api/v1'
 
-export async function loginToken(request: APIRequestContext) {
+export async function loginTokens(request: APIRequestContext) {
   const response = await request.post(`${API}/auth/login`, {
     form: { username: 'admin@aub.edu.kh', password: 'Admin@AUB2026' },
   })
   expect(response.ok(), await response.text()).toBeTruthy()
-  return (await response.json()).access_token as string
+  return (await response.json()) as {
+    access_token: string
+    refresh_token: string
+    user: { id: string, department_id?: string, full_name: string }
+  }
+}
+
+export async function loginToken(request: APIRequestContext) {
+  return (await loginTokens(request)).access_token
 }
 
 export async function authenticate(page: Page, request: APIRequestContext) {

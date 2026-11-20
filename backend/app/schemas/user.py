@@ -1,6 +1,6 @@
 from typing import List, Optional
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class RoleOut(BaseModel):
@@ -26,13 +26,17 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    password: str
+    password: str = Field(min_length=8, max_length=128)
     roles: Optional[List[str]] = ["Staff"]
 
 
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(min_length=20)
 
 
 class UserOut(UserBase):

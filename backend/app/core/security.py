@@ -1,3 +1,4 @@
+import uuid
 import bcrypt
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Union
@@ -29,6 +30,8 @@ def create_access_token(
 
     to_encode = {
         "exp": expire,
+        "iat": datetime.now(timezone.utc),
+        "jti": uuid.uuid4().hex,
         "sub": str(subject),
         "roles": roles or [],
         "type": "access"
@@ -45,6 +48,8 @@ def create_refresh_token(subject: Union[str, Any], expires_delta: Optional[timed
 
     to_encode = {
         "exp": expire,
+        "iat": datetime.now(timezone.utc),
+        "jti": uuid.uuid4().hex,
         "sub": str(subject),
         "type": "refresh"
     }

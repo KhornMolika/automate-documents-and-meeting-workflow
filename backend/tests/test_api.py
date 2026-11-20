@@ -25,6 +25,13 @@ async def test_scalar_api_reference(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_auth_workflow(client: AsyncClient):
+    admin_login = await client.post(
+        "/api/v1/auth/login",
+        data={"username": "admin@aub.edu.kh", "password": "Admin@AUB2026"},
+    )
+    assert admin_login.status_code == 200
+    admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+
     reg_payload = {
         "email": "test.staff@aub.edu.kh",
         "password": "Password@123",
@@ -32,21 +39,79 @@ async def test_auth_workflow(client: AsyncClient):
         "student_or_staff_id": "AUB-5801",
         "roles": ["Staff"],
     }
-    reg_res = await client.post("/api/v1/auth/register", json=reg_payload)
+
+    # Public sign-up is disabled so an anonymous user cannot grant themselves admin.
+    unauth_reg = await client.post("/api/v1/auth/register", json=reg_payload)
+    assert unauth_reg.status_code == 401
+
+    reg_res = await client.post(
+        "/api/v1/auth/register", json=reg_payload, headers=admin_headers
+    )
     assert reg_res.status_code == 200
     assert reg_res.json()["email"] == "test.staff@aub.edu.kh"
+    assert [role["role_name"] for role in reg_res.json()["roles"]] == ["Staff"]
+
+    bad_role = await client.post(
+        "/api/v1/auth/register",
+        json={**reg_payload, "email": "bad.role@aub.edu.kh", "roles": ["Superuser"]},
+        headers=admin_headers,
+    )
+    assert bad_role.status_code == 400
+
+    dup_res = await client.post(
+        "/api/v1/auth/register", json=reg_payload, headers=admin_headers
+    )
+    assert dup_res.status_code == 400
 
     login_res = await client.post(
         "/api/v1/auth/login",
-        data={"username": "test.staff@aub.edu.kh", "password": "Password@123"},
+        data={"username": " TEST.STAFF@AUB.EDU.KH ", "password": "Password@123"},
     )
     assert login_res.status_code == 200
-    access_token = login_res.json()["access_token"]
+    tokens = login_res.json()
+    access_token = tokens["access_token"]
+    refresh_token = tokens["refresh_token"]
 
     headers = {"Authorization": f"Bearer {access_token}"}
     me_res = await client.get("/api/v1/auth/me", headers=headers)
     assert me_res.status_code == 200
     assert me_res.json()["email"] == "test.staff@aub.edu.kh"
+
+    # A refresh token must never be accepted as an access token.
+    refresh_as_access = await client.get(
+        "/api/v1/auth/me", headers={"Authorization": f"Bearer {refresh_token}"}
+    )
+    assert refresh_as_access.status_code == 401
+
+    refresh_res = await client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": refresh_token}
+    )
+    assert refresh_res.status_code == 200
+    refreshed = refresh_res.json()
+    assert refreshed["access_token"] != access_token
+    me_after_refresh = await client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {refreshed['access_token']}"},
+    )
+    assert me_after_refresh.status_code == 200
+    assert me_after_refresh.json()["email"] == "test.staff@aub.edu.kh"
+
+
+@pytest.mark.asyncio
+async def test_login_rate_limit(client: AsyncClient):
+    for _ in range(5):
+        response = await client.post(
+            "/api/v1/auth/login",
+            data={"username": "rate.limit@aub.edu.kh", "password": "wrong-password"},
+        )
+        assert response.status_code == 401
+
+    blocked = await client.post(
+        "/api/v1/auth/login",
+        data={"username": "rate.limit@aub.edu.kh", "password": "wrong-password"},
+    )
+    assert blocked.status_code == 429
+    assert blocked.headers.get("Retry-After") == "300"
 
 
 @pytest.mark.asyncio
@@ -60,6 +125,12 @@ async def test_document_and_meeting_lifecycle(client: AsyncClient, db_session: A
     await db_session.commit()
     await db_session.refresh(department)
 
+    admin_login = await client.post(
+        "/api/v1/auth/login",
+        data={"username": "admin@aub.edu.kh", "password": "Admin@AUB2026"},
+    )
+    admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+
     reg_payload = {
         "email": "doc.staff@aub.edu.kh",
         "password": "Password@123",
@@ -68,7 +139,10 @@ async def test_document_and_meeting_lifecycle(client: AsyncClient, db_session: A
         "department_id": department.id,
         "roles": ["Staff"],
     }
-    await client.post("/api/v1/auth/register", json=reg_payload)
+    register_res = await client.post(
+        "/api/v1/auth/register", json=reg_payload, headers=admin_headers
+    )
+    assert register_res.status_code == 200
 
     login_res = await client.post(
         "/api/v1/auth/login",

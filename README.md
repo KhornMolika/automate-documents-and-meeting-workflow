@@ -52,6 +52,18 @@ docker-compose.yml
 
 ---
 
+## Authentication
+
+- Sign-in uses a **60-minute access token** and a **7-day refresh token**.
+- The frontend refreshes the access token silently before it expires, so users are not logged out mid-task.
+- If refresh fails, the app redirects to `/login` with a session-expired message and returns the user to the requested page after sign-in.
+- Public registration is disabled. An administrator must create accounts through `POST /api/v1/auth/register`.
+- Refresh tokens cannot be used as access tokens.
+- Failed sign-in attempts are throttled: 5 failures per email and IP in 5 minutes, then `429` with `Retry-After`.
+- Change `SECRET_KEY` and the seeded administrator password before deploying.
+
+---
+
 ## Quick start
 
 ### 1. Backend

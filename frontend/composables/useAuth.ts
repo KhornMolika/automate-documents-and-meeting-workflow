@@ -2,43 +2,48 @@ import type { AuthUser, LoginResponse } from '~/types/api'
 
 export function useAuth() {
   const config = useRuntimeConfig()
-  const user = useState<AuthUser | null>('auth.user', () => null)
-  const token = useCookie<string | null>('aub_access_token', {
-    maxAge: 60 * 60 * 8,
-    sameSite: 'lax',
-  })
+  const session = useSession()
   const api = useApi()
 
   async function login(email: string, password: string) {
-    const body = new URLSearchParams({ username: email, password })
-    const data = await $fetch<LoginResponse>('/auth/login', {
-      baseURL: config.public.apiBase,
+    const body = new URLSearchParams({
+      username: email.trim().toLowerCase(),
+      password,
+    })
+    const data = await $fetch<LoginResponse>(`${config.public.apiBase}/auth/login`, {
       method: 'POST',
       body,
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
-    token.value = data.access_token
-    user.value = data.user
+    session.setSession(data)
     return data.user
   }
 
   async function fetchMe() {
-    if (!token.value) return null
+    if (!session.hasSession()) {
+      session.user.value = null
+      return null
+    }
     try {
-      user.value = await api<AuthUser>('/auth/me')
-      return user.value
+      const user = await api<AuthUser>('/auth/me')
+      session.user.value = user
+      return user
     } catch {
-      token.value = null
-      user.value = null
+      // useApi clears the session and redirects only on a real 401.
       return null
     }
   }
 
   async function logout() {
-    token.value = null
-    user.value = null
+    session.clearSession()
     await navigateTo('/login', { replace: true })
   }
 
-  return { user, token, login, fetchMe, logout }
+  return {
+    user: session.user,
+    token: session.accessToken,
+    login,
+    fetchMe,
+    logout,
+  }
 }
