@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import re
+import time
 from typing import Any, Dict, List
 
 import httpx
@@ -16,11 +18,33 @@ class AIServiceUnavailable(RuntimeError):
     """Raised when Gemini is not configured or cannot return a usable response."""
 
 
+def _parse_json_response(raw: str) -> Dict[str, Any]:
+    text = (raw or "").strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    candidates = [text]
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            repaired = re.sub(r",\s*([}\]])", r"\1", candidate)
+            try:
+                data = json.loads(repaired)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(data, dict):
+            return data
+    raise ValueError("Gemini did not return valid JSON.")
+
+
 class GeminiService:
     def __init__(self):
         self.api_key = (settings.GEMINI_API_KEY or "").strip()
         self.model_name = settings.GEMINI_MODEL
         self.timeout = settings.GEMINI_TIMEOUT_SECONDS
+        self.total_timeout = settings.GEMINI_TOTAL_TIMEOUT_SECONDS
         if self.api_key:
             logger.info("Gemini REST client configured with model %s", self.model_name)
 
@@ -51,11 +75,17 @@ class GeminiService:
             },
         }
         last_error = "Gemini did not return a usable response."
+        started = time.monotonic()
 
         for model in self._models():
             for attempt in range(2):
+                remaining = self.total_timeout - (time.monotonic() - started)
+                if remaining <= 1:
+                    raise AIServiceUnavailable(
+                        f"Gemini took longer than {self.total_timeout}s. Try again in a moment."
+                    )
                 try:
-                    async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    async with httpx.AsyncClient(timeout=min(self.timeout, remaining)) as client:
                         response = await client.post(
                             self._url(model),
                             headers={
@@ -69,7 +99,7 @@ class GeminiService:
                     await asyncio.sleep(1)
                     continue
                 except httpx.TimeoutException:
-                    last_error = f"Gemini timed out after {self.timeout}s."
+                    last_error = "Gemini timed out. Try again in a moment."
                     await asyncio.sleep(1)
                     continue
 
@@ -100,12 +130,8 @@ class GeminiService:
                         for part in candidate.get("content", {}).get("parts", []):
                             if part.get("text"):
                                 text_parts.append(part["text"])
-                    raw = "".join(text_parts).strip()
-                    raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-                    data = json.loads(raw)
-                    if not isinstance(data, dict):
-                        raise ValueError("Gemini did not return a JSON object.")
-                    return data
+                    raw = "".join(text_parts)
+                    return _parse_json_response(raw)
                 except Exception as exc:
                     last_error = f"Gemini ({model}) returned an invalid response: {exc}"
                     logger.error(last_error)

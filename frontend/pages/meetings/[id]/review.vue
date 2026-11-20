@@ -669,8 +669,12 @@ onUnmounted(stopPolling)
               </p>
               <p v-if="aiError" class="mt-2 text-[13px] text-negative">{{ aiError }}</p>
               <Button variant="outline" size="sm" class="mt-3" :disabled="generating || !canGenerate" @click="generateDraft">
+                <span v-if="generating" class="h-3 w-3 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
                 {{ generating ? 'Generating…' : 'Generate draft from transcript' }}
               </Button>
+              <p v-if="generating" class="mt-2 text-[12px] text-muted-foreground">
+                Gemini is drafting the minutes. This usually takes a few seconds, but can take up to two minutes.
+              </p>
             </div>
 
             <section class="space-y-2">

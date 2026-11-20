@@ -36,9 +36,10 @@ class Settings(BaseSettings):
 
     # Google Gemini API
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-3.5-flash"
-    GEMINI_FALLBACK_MODELS: List[str] = ["gemini-3.6-flash", "gemini-3.1-flash-lite"]
-    GEMINI_TIMEOUT_SECONDS: int = 120
+    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
+    GEMINI_FALLBACK_MODELS: List[str] = ["gemini-3-flash-preview", "gemini-3.1-flash-lite"]
+    GEMINI_TIMEOUT_SECONDS: int = 60
+    GEMINI_TOTAL_TIMEOUT_SECONDS: int = 120
 
     # Generative LLM provider: auto | gemini | ollama | opencode
     # auto uses Gemini when GEMINI_API_KEY is set, otherwise the local Ollama model.
