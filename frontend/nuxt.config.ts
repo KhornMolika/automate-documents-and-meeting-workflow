@@ -8,6 +8,7 @@ export default defineNuxtConfig({
   ],
   css: ['~/assets/css/main.css'],
   app: {
+    pageTransition: { name: 'page', mode: 'out-in' },
     head: {
       title: 'ACLEDA University · Document & Meeting AI',
       meta: [

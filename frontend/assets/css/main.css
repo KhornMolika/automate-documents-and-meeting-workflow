@@ -60,6 +60,7 @@
 
   html {
     @apply bg-background;
+    scroll-behavior: smooth;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
@@ -146,6 +147,21 @@
   .dialog-leave-to {
     opacity: 0;
     transform: translateY(4px) scale(0.99);
+  }
+
+  .page-enter-active,
+  .page-leave-active {
+    transition: opacity 180ms ease, transform 200ms ease;
+  }
+
+  .page-enter-from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  .page-leave-to {
+    opacity: 0;
+    transform: translateY(-4px);
   }
 }
 

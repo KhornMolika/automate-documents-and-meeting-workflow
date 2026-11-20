@@ -87,7 +87,7 @@ async function updateStatus(item: TaskActionItem, event: Event) {
     <ErrorState v-else-if="error" class="mt-6" :message="error.message" @retry="refresh" />
 
     <div v-else class="mt-6">
-      <div class="flex items-center gap-1 border-b" role="tablist">
+      <div class="no-scrollbar flex items-center gap-1 overflow-x-auto border-b" role="tablist">
         <button
           role="tab"
           :aria-selected="tab === 'actions'"
@@ -121,7 +121,7 @@ async function updateStatus(item: TaskActionItem, event: Event) {
       </div>
 
       <template v-if="tab === 'actions'">
-        <div class="flex items-center gap-1 border-b">
+        <div class="no-scrollbar flex items-center gap-1 overflow-x-auto border-b">
           <button
             v-for="option in filters"
             :key="option.value"

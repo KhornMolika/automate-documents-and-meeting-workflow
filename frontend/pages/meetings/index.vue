@@ -165,7 +165,7 @@ function reviewLink(meetingId: string) {
 
     <template v-else>
       <div class="mt-6 flex flex-wrap items-end justify-between gap-3 border-b">
-        <div class="flex items-center gap-1" role="tablist" aria-label="Filter meetings">
+        <div class="no-scrollbar flex items-center gap-1 overflow-x-auto" role="tablist" aria-label="Filter meetings">
           <button
             v-for="filter in filters"
             :key="filter.value"

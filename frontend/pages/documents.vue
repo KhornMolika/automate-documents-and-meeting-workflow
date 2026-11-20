@@ -348,33 +348,33 @@ async function summarizeSelected() {
 
     <Dialog :open="selected !== null" @update:open="value => { if (!value) selected = null }">
       <DialogContent class="max-w-2xl" data-testid="document-detail">
-        <DialogHeader v-if="selected">
+        <DialogHeader v-if="selected" class="border-b pb-4">
           <div class="flex flex-wrap items-center gap-2">
             <Badge variant="outline">{{ selected.category?.name ?? 'Uncategorised' }}</Badge>
             <span class="text-[13px] text-muted-foreground">
               {{ selected.academic_year }} · v{{ selected.current_version }}
             </span>
           </div>
-          <DialogTitle class="pr-8">{{ selected.title }}</DialogTitle>
-          <DialogDescription>
+          <DialogTitle class="break-words pr-8 leading-snug">{{ selected.title }}</DialogTitle>
+          <DialogDescription class="break-words">
             {{ selected.latest_version?.file_name ?? 'No file' }} · {{ formatBytes(selected.latest_version?.file_size_bytes) }} · uploaded {{ formatDate(selected.created_at) }}
           </DialogDescription>
         </DialogHeader>
 
-        <div v-if="selected" class="space-y-5">
-          <div v-if="selected.drive_file_id" class="flex flex-col gap-2 rounded-md border border-brand/20 bg-brand-soft px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
+        <div v-if="selected" class="min-w-0 space-y-5">
+          <div v-if="selected.drive_file_id" class="flex flex-col gap-3 rounded-md border border-brand/20 bg-brand-soft px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div class="min-w-0">
               <p class="text-[13px] font-medium text-brand">Archived from a meeting</p>
               <p class="mt-0.5 text-[13px] text-brand/80">The published minutes are stored with their source meeting.</p>
             </div>
-            <Button variant="outline" size="sm" as-child>
+            <Button variant="outline" size="sm" as-child class="shrink-0 self-start sm:self-auto">
               <NuxtLink :to="`/meetings/${selected.drive_file_id}/review`">Open meeting</NuxtLink>
             </Button>
           </div>
 
           <div class="rounded-md border bg-muted/40 p-4">
             <p class="text-[13px] font-medium text-muted-foreground">Summary</p>
-            <p v-if="selected.latest_version?.abstract_summary" data-testid="document-summary" class="mt-1.5 text-sm leading-relaxed">
+            <p v-if="selected.latest_version?.abstract_summary" data-testid="document-summary" class="mt-1.5 break-words text-sm leading-relaxed">
               {{ selected.latest_version.abstract_summary }}
             </p>
             <div v-else class="mt-2 flex flex-col items-start gap-2">
@@ -387,10 +387,19 @@ async function summarizeSelected() {
 
           <div v-if="selectedEntities.length">
             <p class="text-[13px] font-medium text-muted-foreground">Extracted details</p>
-            <dl class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div v-for="entity in selectedEntities" :key="entity.label">
+            <dl class="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div v-for="entity in selectedEntities" :key="entity.label" class="min-w-0">
                 <dt class="text-[13px] capitalize text-muted-foreground">{{ entity.label }}</dt>
-                <dd class="mt-0.5 text-[13px] font-medium">{{ entity.value }}</dd>
+                <dd class="mt-1.5 flex flex-wrap gap-1.5">
+                  <Badge
+                    v-for="(entry, index) in entity.values"
+                    :key="`${entity.label}-${index}`"
+                    variant="secondary"
+                    class="max-w-full whitespace-normal break-words text-left"
+                  >
+                    {{ entry }}
+                  </Badge>
+                </dd>
               </div>
             </dl>
           </div>
@@ -401,17 +410,17 @@ async function summarizeSelected() {
               <div
                 v-for="version in selectedVersions"
                 :key="version.id"
-                class="flex items-center justify-between gap-3 px-3 py-2.5 text-[13px]"
+                class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-2.5 text-[13px]"
               >
                 <span class="font-medium">v{{ version.version_number }}</span>
-                <span class="text-muted-foreground">{{ version.file_name }}</span>
-                <span class="tabular-nums text-muted-foreground">{{ formatDate(version.created_at) }}</span>
+                <span class="min-w-0 flex-1 truncate text-muted-foreground">{{ version.file_name }}</span>
+                <span class="tabular-nums shrink-0 text-muted-foreground">{{ formatDate(version.created_at) }}</span>
               </div>
             </div>
           </div>
         </div>
 
-        <DialogFooter>
+        <DialogFooter class="border-t pt-4">
           <Button variant="outline" @click="selected = null">Done</Button>
         </DialogFooter>
       </DialogContent>

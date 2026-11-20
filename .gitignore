@@ -75,6 +75,9 @@ downloads/
 eggs/
 .eggs/
 lib/
+# Keep the Nuxt source library even though Python build folders are ignored
+!frontend/lib/
+!frontend/lib/**
 lib64/
 parts/
 sdist/
