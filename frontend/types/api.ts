@@ -94,6 +94,12 @@ export interface ActionItem {
   created_at: string
 }
 
+export interface DriveFile {
+  id: string
+  name: string
+  web_view_link?: string | null
+}
+
 export interface MeetingSummary {
   id: string
   executive_summary: string
@@ -105,6 +111,7 @@ export interface MeetingSummary {
   verified_at?: string | null
   decisions: Decision[]
   action_items: ActionItem[]
+  drive_files?: DriveFile[]
 }
 
 export interface Meeting {
@@ -226,6 +233,7 @@ export interface MomPayload {
     deadline?: string | null
     confidence_score?: number
   }[]
+  publish_to_drive?: boolean
 }
 
 export interface MinutesOfMeeting {

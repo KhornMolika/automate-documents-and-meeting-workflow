@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Archive,
   Download,
@@ -56,13 +56,39 @@ const { data: documentData, pending, error, refresh } = await useAsyncData('docu
 const categories = computed(() => categoryData.value ?? [])
 const allDocuments = computed(() => documentData.value ?? [])
 const showArchived = ref(false)
+const search = ref('')
+const debouncedSearch = ref('')
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+const { data: searchData, pending: searchPending, refresh: refreshSearch } = await useAsyncData(
+  'document-search',
+  () => debouncedSearch.value
+    ? api<{ items: WorkspaceDocument[], total: number }>('/documents/search', {
+        query: { q: debouncedSearch.value, include_archived: true },
+      })
+    : Promise.resolve(null),
+  { watch: [debouncedSearch] },
+)
+const sourceDocuments = computed(() =>
+  debouncedSearch.value ? (searchData.value?.items ?? []) : allDocuments.value,
+)
 const documents = computed(() =>
-  allDocuments.value.filter(document => document.is_archived === showArchived.value),
+  sourceDocuments.value.filter(document => document.is_archived === showArchived.value),
 )
 const archivedCount = computed(() => allDocuments.value.filter(document => document.is_archived).length)
 const departmentName = computed(() => user.value?.department?.name ?? 'Department workspace')
 
-const search = ref('')
+async function refreshDocuments() {
+  await refresh()
+  if (debouncedSearch.value) await refreshSearch()
+}
+
+watch(search, (value) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    debouncedSearch.value = value.trim()
+  }, 300)
+})
+
 const category = ref('ALL')
 const year = ref('ALL')
 const selected = ref<WorkspaceDocument | null>(null)
@@ -107,21 +133,12 @@ const uploadCategoryOptions = computed(() => [
   ...categories.value.map(item => ({ value: item.id, label: item.name })),
 ])
 
-const filteredDocuments = computed(() => {
-  const query = search.value.trim().toLowerCase()
-  return documents.value.filter(document => {
-    const matchesCategory = category.value === 'ALL' || document.category?.id === category.value
-    const matchesYear = year.value === 'ALL' || document.academic_year === year.value
-    const matchesQuery =
-      !query ||
-      [document.title, document.category?.name, document.latest_version?.abstract_summary, document.latest_version?.file_name]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase()
-        .includes(query)
-    return matchesCategory && matchesYear && matchesQuery
-  })
-})
+const filteredDocuments = computed(() =>
+  documents.value.filter(document =>
+    (category.value === 'ALL' || document.category?.id === category.value)
+    && (year.value === 'ALL' || document.academic_year === year.value),
+  ),
+)
 
 const categoryRows = computed(() => {
   const rows = new Map<string, { key: string, label: string, count: number }>()
@@ -225,7 +242,7 @@ async function addDocument() {
         body: formData,
       })
     }
-    await refresh()
+    await refreshDocuments()
     uploadOpen.value = false
     resetUpload()
     toast.success(
@@ -251,7 +268,7 @@ async function summarizeSelected() {
     )
     selected.value = updated
     summaryDraftLanguage.value = language
-    await refresh()
+    await refreshDocuments()
     toast.success(
       `Document summary generated in ${language === 'km' ? 'Khmer' : 'English'}.`,
     )
@@ -293,7 +310,7 @@ async function renameDocument() {
     if (selected.value?.id === updated.id) selected.value = updated
     renameOpen.value = false
     renameTarget.value = null
-    await refresh()
+    await refreshDocuments()
     toast.success('Document renamed.')
   } catch (err: any) {
     toast.error(err?.data?.detail ?? 'Could not rename the document.')
@@ -317,7 +334,7 @@ async function deleteDocument() {
     if (selected.value?.id === document.id) selected.value = null
     deleteOpen.value = false
     deleteTarget.value = null
-    await refresh()
+    await refreshDocuments()
     toast.success('Document deleted.')
   } catch (err: any) {
     toast.error(err?.data?.detail ?? 'Could not delete the document.')
@@ -335,7 +352,7 @@ async function toggleArchive(document: WorkspaceDocument) {
       body: { is_archived: !document.is_archived },
     })
     if (selected.value?.id === updated.id) selected.value = updated
-    await refresh()
+    await refreshDocuments()
     toast.success(updated.is_archived ? 'Document archived.' : 'Document restored.')
   } catch (err: any) {
     toast.error(err?.data?.detail ?? 'Could not update the document.')
@@ -374,7 +391,7 @@ async function uploadVersion() {
     versionOpen.value = false
     versionTarget.value = null
     versionFile.value = null
-    await refresh()
+    await refreshDocuments()
     toast.success(`Version ${updated.current_version} uploaded.`)
   } catch (err: any) {
     toast.error(err?.data?.detail ?? 'Could not upload the new version.')
@@ -407,7 +424,10 @@ async function downloadDocument(document: WorkspaceDocument, versionId?: string)
 }
 
 onMounted(() => window.document.addEventListener('click', closeMenu))
-onUnmounted(() => window.document.removeEventListener('click', closeMenu))
+onUnmounted(() => {
+  window.document.removeEventListener('click', closeMenu)
+  if (searchTimer) clearTimeout(searchTimer)
+})
 </script>
 
 <template>
@@ -424,7 +444,7 @@ onUnmounted(() => window.document.removeEventListener('click', closeMenu))
       </template>
     </PageHeader>
 
-    <LoadingState v-if="pending" class="mt-6" />
+    <LoadingState v-if="pending || (searchPending && debouncedSearch)" class="mt-6" />
     <ErrorState v-else-if="error" class="mt-6" :message="error.message" @retry="refresh" />
 
     <template v-else>

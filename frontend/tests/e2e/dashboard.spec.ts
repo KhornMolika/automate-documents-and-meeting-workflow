@@ -30,7 +30,7 @@ test.describe('Overview', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Documents' })).toBeVisible()
     await expect(page.getByRole('link', { name: 'API reference' })).toHaveAttribute(
       'href',
-      'http://localhost:8000/docs',
+      'http://127.0.0.1:8000/docs',
     )
     await expect(page.getByRole('link', { name: 'Tasks', exact: true })).toBeVisible()
   })

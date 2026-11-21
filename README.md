@@ -190,6 +190,21 @@ If the provider is unavailable, the API returns an actionable error and the UI s
 
 The AI output is always a draft. Only the version a human reviews and publishes becomes official.
 
+## Optional Google Drive publishing
+
+Verified minutes can optionally be uploaded to a Google Drive folder. This is separate from the link-based document import, which works without Google credentials.
+
+Configure these values in `backend/.env` or the server environment:
+
+```bash
+GOOGLE_DRIVE_CLIENT_ID=...
+GOOGLE_DRIVE_CLIENT_SECRET=...
+GOOGLE_DRIVE_REFRESH_TOKEN=...
+GOOGLE_DRIVE_FOLDER_ID=...
+```
+
+The OAuth client needs the `https://www.googleapis.com/auth/drive.file` scope. The folder must be writable by the Google account that owns the refresh token. When configured, the publish dialog shows **Also upload to Google Drive** and uploads the DOCX minutes plus the action-item CSV.
+
 ## Correctness and privacy
 
 - Transcript parsing, archiving, task tracking, overdue calculation and exports are deterministic.

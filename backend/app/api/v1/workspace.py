@@ -8,10 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.meeting import Meeting, MeetingParticipant, MeetingSummary
 from app.models.user import User
 from app.services.exporter import build_action_items_csv, build_mom_docx
+from app.services.google_drive import google_drive
 
 router = APIRouter(prefix="/workspace", tags=["Local exports"])
 
@@ -30,6 +32,14 @@ def _meeting_query(meeting_id: str):
             selectinload(Meeting.summary).selectinload(MeetingSummary.action_items),
         )
     )
+
+
+@router.get("/google-drive/status")
+async def google_drive_status(current_user: User = Depends(get_current_user)) -> Any:
+    return {
+        "configured": google_drive.is_configured,
+        "folder_id": settings.GOOGLE_DRIVE_FOLDER_ID if google_drive.is_configured else None,
+    }
 
 
 @router.get("/meetings/{meeting_id}/minutes.docx")

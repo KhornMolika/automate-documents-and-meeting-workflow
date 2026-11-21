@@ -519,6 +519,7 @@ async def list_documents(
 @router.get("/search", response_model=DocumentSearchResponse)
 async def search_documents(
     q: str,
+    include_archived: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
@@ -532,7 +533,6 @@ async def search_documents(
         select(Document)
         .join(DocumentVersion, Document.id == DocumentVersion.document_id)
         .where(
-            Document.is_archived.is_(False),
             or_(
                 Document.title.ilike(pattern),
                 DocumentVersion.extracted_text.ilike(pattern),
@@ -542,6 +542,8 @@ async def search_documents(
         .options(selectinload(Document.category), selectinload(Document.versions))
         .distinct()
     )
+    if not include_archived:
+        stmt = stmt.where(Document.is_archived.is_(False))
     if current_user.department_id:
         stmt = stmt.where(Document.department_id == current_user.department_id)
 

@@ -116,7 +116,9 @@ async def test_login_rate_limit(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_document_and_meeting_lifecycle(client: AsyncClient, db_session: AsyncSession):
+async def test_document_and_meeting_lifecycle(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
     department = Department(
         department_code="TEST",
         name="Test Department",
@@ -268,6 +270,31 @@ async def test_document_and_meeting_lifecycle(client: AsyncClient, db_session: A
     assert summary_data["is_verified"] is True
     assert len(summary_data["decisions"]) == 1
     assert len(summary_data["action_items"]) == 1
+    assert summary_data["drive_files"] == []
+
+    async def fake_drive_publish(meeting, summary):
+        return [
+            {
+                "id": "drive-doc-1",
+                "name": f"{meeting.title}_minutes.docx",
+                "webViewLink": "https://drive.google.com/file/d/drive-doc-1/view",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.services.google_drive.GoogleDriveService.is_configured",
+        property(lambda self: True),
+    )
+    monkeypatch.setattr(
+        "app.api.v1.meetings.google_drive.publish_minutes", fake_drive_publish
+    )
+    drive_res = await client.post(
+        f"/api/v1/meetings/{meeting_id}/approve-mom",
+        json={**draft_payload, "publish_to_drive": True},
+        headers=headers,
+    )
+    assert drive_res.status_code == 200
+    assert drive_res.json()["drive_files"][0]["id"] == "drive-doc-1"
 
     # The verified minutes are archived in the document repository.
     search_res = await client.get("/api/v1/documents/search?q=Minutes", headers=headers)
@@ -496,6 +523,11 @@ async def test_google_document_import(client: AsyncClient, db_session: AsyncSess
     assert imported["title"] == "Imported Google Sheet"
     assert imported["latest_version"]["file_name"] == "imported-sheet.csv"
     assert "spreadsheets/d/abc123/export?format=xlsx" in requested_urls[0]
+    search_imported = await client.get(
+        "/api/v1/documents/search?q=Imported%20Google%20Sheet", headers=headers
+    )
+    assert search_imported.status_code == 200
+    assert any(item["id"] == imported["id"] for item in search_imported.json()["items"])
 
     invalid_res = await client.post(
         "/api/v1/documents/import/google",

@@ -97,6 +97,16 @@ class MeetingSummaryOut(BaseModel):
     action_items: List[ActionItemOut] = []
 
 
+class DriveFileOut(BaseModel):
+    id: str
+    name: str
+    web_view_link: Optional[str] = None
+
+
+class MeetingPublishOut(MeetingSummaryOut):
+    drive_files: List[DriveFileOut] = []
+
+
 class MeetingCreate(BaseModel):
     title: str
     description: Optional[str] = None
@@ -144,6 +154,7 @@ class MoMApprovalInput(BaseModel):
     discussion_points: List[str]
     decisions: List[DecisionSchema]
     action_items: List[ActionItemSchema]
+    publish_to_drive: bool = False
 
 
 class MoMDraftInput(BaseModel):

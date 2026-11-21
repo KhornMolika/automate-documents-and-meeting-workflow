@@ -35,6 +35,7 @@ import StatusBadge from '~/components/workspace/StatusBadge.vue'
 import { useApi } from '~/composables/useApi'
 import { formatDate, formatTimeRange, parseDiscussionPoints, plural } from '~/lib/format'
 import type {
+  DriveFile,
   Meeting,
   MeetingSummary,
   MinutesOfMeeting,
@@ -58,8 +59,13 @@ const { data, pending, error, refresh } = await useAsyncData(`workspace-${meetin
   return { meeting, transcripts, transcription }
 })
 
+const { data: driveStatus } = await useAsyncData('google-drive-status', () =>
+  api<{ configured: boolean }>('/workspace/google-drive/status'),
+)
 const meeting = computed(() => data.value?.meeting)
 const sourceTranscripts = computed(() => data.value?.transcripts ?? [])
+const publishToDrive = ref(false)
+const driveLinks = ref<DriveFile[]>([])
 const transcription = ref<TranscriptionJob | null>(null)
 const mom = reactive({
   executiveSummary: '',
@@ -505,13 +511,18 @@ async function publish() {
   }
   publishing.value = true
   try {
-    await api(`/meetings/${meetingId.value}/approve-mom`, {
+    const result = await api<MeetingSummary>(`/meetings/${meetingId.value}/approve-mom`, {
       method: 'POST',
-      body: payload(),
+      body: { ...payload(), publish_to_drive: publishToDrive.value },
     })
+    driveLinks.value = result.drive_files ?? []
     await refresh()
     approveOpen.value = false
-    toast.success('Minutes published, archived in Documents, and follow-ups updated.')
+    toast.success(
+      driveLinks.value.length
+        ? 'Minutes published and uploaded to Google Drive.'
+        : 'Minutes published, archived in Documents, and follow-ups updated.',
+    )
   } catch (err: any) {
     toast.error(err?.data?.detail ?? 'Could not publish the minutes.')
   } finally {
@@ -761,6 +772,22 @@ onUnmounted(() => {
           </CardHeader>
 
           <CardContent class="flex-1 space-y-6 overflow-y-auto border-t pt-5">
+            <div v-if="driveLinks.length" class="rounded-md border border-brand/20 bg-brand-soft px-3 py-2.5 text-[13px]">
+              <p class="font-medium text-brand">Published to Google Drive</p>
+              <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                <a
+                  v-for="file in driveLinks"
+                  :key="file.id"
+                  :href="file.web_view_link ?? '#'"
+                  target="_blank"
+                  rel="noreferrer"
+                  class="font-medium text-brand hover:underline"
+                >
+                  {{ file.name }}
+                </a>
+              </div>
+            </div>
+
             <div v-if="!hasDraft" class="rounded-md border border-dashed border-input bg-muted/30 p-4">
               <p class="text-[13px] font-medium">No minutes yet</p>
               <p class="mt-1 text-[13px] leading-relaxed text-muted-foreground">
@@ -933,6 +960,16 @@ onUnmounted(() => {
             <p class="font-medium text-foreground">{{ meeting.title }}</p>
             <p class="mt-1">{{ itemSummary }}</p>
           </div>
+          <label
+            v-if="driveStatus?.configured"
+            class="flex cursor-pointer items-start gap-2.5 rounded-md border border-input bg-card px-3 py-2.5 text-[13px]"
+          >
+            <input v-model="publishToDrive" type="checkbox" class="mt-0.5 h-4 w-4 accent-brand" />
+            <span>
+              <span class="block font-medium text-foreground">Also upload to Google Drive</span>
+              <span class="mt-0.5 block text-muted-foreground">Uploads the DOCX minutes and action-item CSV to the configured Drive folder.</span>
+            </span>
+          </label>
           <DialogFooter>
             <Button variant="outline" :disabled="publishing" @click="approveOpen = false">Cancel</Button>
             <Button :disabled="publishing" @click="publish">

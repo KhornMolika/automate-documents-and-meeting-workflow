@@ -34,9 +34,11 @@ from app.models.meeting import (
 )
 from app.models.user import User
 from app.schemas.meeting import (
+    DriveFileOut,
     MeetingCreate,
     MeetingOut,
     MeetingPage,
+    MeetingPublishOut,
     MeetingSummaryOut,
     MeetingUpdate,
     MinutesOfMeetingSchema,
@@ -48,6 +50,7 @@ from app.schemas.meeting import (
     TranscriptSegmentUpdate,
     TranscriptionJobOut,
 )
+from app.services.google_drive import GoogleDriveError, google_drive
 from app.services.llm_service import AIServiceUnavailable, llm_service
 from app.services.minutes import export_verified_minutes
 from app.services.transcript_parser import parse_transcript
@@ -552,7 +555,7 @@ async def save_mom_draft(
     return (await db.execute(stmt)).scalar_one()
 
 
-@router.post("/{meeting_id}/approve-mom", response_model=MeetingSummaryOut)
+@router.post("/{meeting_id}/approve-mom", response_model=MeetingPublishOut)
 async def approve_and_publish_mom(
     meeting_id: str,
     approval_in: MoMApprovalInput,
@@ -560,6 +563,11 @@ async def approve_and_publish_mom(
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """Verify the minutes, write DOCX/CSV exports and archive them as a Document."""
+    if approval_in.publish_to_drive and not google_drive.is_configured:
+        raise HTTPException(
+            status_code=400,
+            detail="Google Drive publishing is not configured on this server.",
+        )
     stmt = select(Meeting).where(Meeting.id == meeting_id).options(*_meeting_options())
     meeting = (await db.execute(stmt)).scalar_one_or_none()
     if not meeting:
@@ -622,6 +630,15 @@ async def approve_and_publish_mom(
     )
     verified = (await db.execute(stmt)).scalar_one()
     await export_verified_minutes(db, meeting, verified)
+
+    drive_files: List[Dict[str, Any]] = []
+    if approval_in.publish_to_drive:
+        try:
+            drive_files = await google_drive.publish_minutes(meeting, verified)
+        except GoogleDriveError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     await db.commit()
 
     stmt = (
@@ -630,4 +647,13 @@ async def approve_and_publish_mom(
         .options(selectinload(MeetingSummary.decisions), selectinload(MeetingSummary.action_items))
         .execution_options(populate_existing=True)
     )
-    return (await db.execute(stmt)).scalar_one()
+    result = MeetingPublishOut.model_validate((await db.execute(stmt)).scalar_one())
+    result.drive_files = [
+        DriveFileOut(
+            id=str(item.get("id", "")),
+            name=str(item.get("name", "")),
+            web_view_link=item.get("webViewLink"),
+        )
+        for item in drive_files
+    ]
+    return result

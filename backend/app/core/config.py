@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     GEMINI_TIMEOUT_SECONDS: int = 60
     GEMINI_TOTAL_TIMEOUT_SECONDS: int = 120
 
+    # Optional Google Drive publishing for verified minutes
+    GOOGLE_DRIVE_CLIENT_ID: str = ""
+    GOOGLE_DRIVE_CLIENT_SECRET: str = ""
+    GOOGLE_DRIVE_REFRESH_TOKEN: str = ""
+    GOOGLE_DRIVE_FOLDER_ID: str = ""
+
     # Generative LLM provider: auto | gemini | ollama | opencode
     # auto uses Gemini when GEMINI_API_KEY is set, otherwise the local Ollama model.
     LLM_PROVIDER: str = "auto"
