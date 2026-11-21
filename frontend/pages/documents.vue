@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Archive,
   Download,
+  ExternalLink,
   FileText,
   Link2,
   MoreHorizontal,
@@ -194,6 +195,10 @@ function openDocument(document: WorkspaceDocument) {
 function onFile(event: Event) {
   const input = event.target as HTMLInputElement
   uploadForm.value.file = input.files?.[0] ?? null
+}
+
+function openGoogleDrive() {
+  window.open('https://drive.google.com/drive/search', '_blank', 'noopener,noreferrer')
 }
 
 function resetUpload() {
@@ -857,6 +862,13 @@ onUnmounted(() => {
               v-model="uploadForm.googleUrl"
               placeholder="https://docs.google.com/document/d/..."
             />
+            <div class="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="outline" size="sm" @click="openGoogleDrive">
+                <ExternalLink class="h-3.5 w-3.5" />
+                Open Google Drive to search
+              </Button>
+              <span class="text-[12px] text-muted-foreground">Choose a file, copy its link, then paste it above.</span>
+            </div>
             <p class="text-[12px] leading-relaxed text-muted-foreground">
               The file must be viewable by anyone with the link. Google Docs become DOCX, Sheets become XLSX, and Slides become PDF.
             </p>
