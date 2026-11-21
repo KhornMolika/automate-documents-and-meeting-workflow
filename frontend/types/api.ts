@@ -38,6 +38,22 @@ export interface Category {
   description?: string | null
 }
 
+export interface DocumentFolder {
+  id: string
+  name: string
+  parent_id?: string | null
+  department_id: string
+  document_count?: number
+  created_at: string
+}
+
+export interface DocumentPermission {
+  user_id: string
+  full_name: string
+  email: string
+  permission: string
+}
+
 export interface DocumentVersion {
   id: string
   version_number: number
@@ -58,9 +74,13 @@ export interface WorkspaceDocument {
   department_id: string
   academic_year: string
   current_version: number
+  folder_id?: string | null
+  folder?: DocumentFolder | null
   drive_file_id?: string | null
   drive_web_link?: string | null
   is_archived: boolean
+  is_restricted?: boolean
+  permissions?: DocumentPermission[]
   created_at: string
   updated_at: string
   latest_version?: DocumentVersion | null

@@ -175,6 +175,11 @@ class LLMService:
             f"{self.describe()} does not support plain generation through _generate_json."
         )
 
+    async def embed_text(self, text: str) -> List[float]:
+        if self.provider == "gemini":
+            return await gemini_service.embed_text(text)
+        raise AIServiceUnavailable(f"{self.describe()} does not support embeddings.")
+
     async def summarize_document(
         self,
         title: str,

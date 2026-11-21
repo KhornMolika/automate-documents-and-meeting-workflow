@@ -1,5 +1,6 @@
 import io
 import json
+import math
 import os
 import re
 import time
@@ -10,7 +11,7 @@ from urllib.parse import unquote
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import desc, or_, select
+from sqlalchemy import desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.datastructures import Headers
@@ -18,13 +19,23 @@ from starlette.datastructures import Headers
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.document import Document, DocumentCategory, DocumentVersion
+from app.models.document import (
+    Document,
+    DocumentCategory,
+    DocumentFolder,
+    DocumentPermission,
+    DocumentVersion,
+)
 from app.models.user import User
 from app.schemas.document import (
     CategoryOut,
     DocumentArchiveInput,
+    DocumentFolderCreate,
+    DocumentFolderOut,
+    DocumentFolderUpdate,
     DocumentOut,
     DocumentSearchResponse,
+    DocumentShareInput,
     DocumentUpdate,
     GoogleImportInput,
 )
@@ -40,30 +51,66 @@ _GOOGLE_DRIVE_FILE_RE = re.compile(r"https?://drive\.google\.com/file/d/([A-Za-z
 _GOOGLE_DRIVE_OPEN_RE = re.compile(r"https?://drive\.google\.com/open\?id=([A-Za-z0-9_-]+)")
 
 
+def _is_department_admin(user: User) -> bool:
+    return user.is_superuser or any(
+        role.role_name in {"System Admin", "Department Admin"} for role in user.roles
+    )
+
+
+def _document_permission(document: Document, user_id: str) -> str | None:
+    for permission in document.permissions:
+        if permission.user_id == user_id:
+            return permission.permission
+    return None
+
+
 def _can_access_document(document: Document, user: User) -> bool:
-    if user.is_superuser or not user.department_id:
+    if user.is_superuser or document.owner_id == user.id:
         return True
+    if not user.department_id:
+        return True
+    if document.is_restricted:
+        return _document_permission(document, user.id) is not None or _is_department_admin(user)
     return document.department_id == user.department_id
 
 
-def _can_manage_document(document: Document, user: User) -> bool:
-    if user.is_superuser or document.owner_id == user.id:
+def _can_edit_document(document: Document, user: User) -> bool:
+    if user.is_superuser or document.owner_id == user.id or _is_department_admin(user):
         return True
     if not _can_access_document(document, user):
         return False
-    return any(role.role_name in {"System Admin", "Department Admin"} for role in user.roles)
+    return _document_permission(document, user.id) in {"edit", "manage"}
+
+
+def _can_manage_document(document: Document, user: User) -> bool:
+    if user.is_superuser or document.owner_id == user.id or _is_department_admin(user):
+        return True
+    return _document_permission(document, user.id) == "manage"
 
 
 def _document_options():
     return (
         selectinload(Document.category),
+        selectinload(Document.folder),
         selectinload(Document.versions),
+        selectinload(Document.permissions).selectinload(DocumentPermission.user),
     )
 
 
 def _attach_latest(document: Document) -> Document:
     document.latest_version = document.versions[0] if document.versions else None
     return document
+
+
+async def _validate_folder(db: AsyncSession, folder_id: str | None, user: User) -> DocumentFolder | None:
+    if not folder_id:
+        return None
+    folder = await db.get(DocumentFolder, folder_id)
+    if not folder:
+        raise HTTPException(status_code=400, detail="The selected folder does not exist.")
+    if user.department_id and folder.department_id != user.department_id:
+        raise HTTPException(status_code=400, detail="The selected folder is outside your department.")
+    return folder
 
 
 async def _load_document(db: AsyncSession, document_id: str) -> Document:
@@ -77,6 +124,27 @@ async def _load_document(db: AsyncSession, document_id: str) -> Document:
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     return _attach_latest(document)
+
+
+async def _embedding_for_text(text: str) -> str | None:
+    if not settings.GEMINI_API_KEY or not text.strip():
+        return None
+    try:
+        values = await llm_service.embed_text(text)
+    except AIServiceUnavailable:
+        return None
+    return json.dumps(values)
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = math.sqrt(sum(a * a for a in left))
+    right_norm = math.sqrt(sum(b * b for b in right))
+    if not left_norm or not right_norm:
+        return 0.0
+    return dot / (left_norm * right_norm)
 
 
 def _validate_document_file(filename: str) -> str:
@@ -166,6 +234,7 @@ async def upload_document(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
     category_id: Optional[str] = Form(None),
+    folder_id: Optional[str] = Form(None),
     academic_year: str = Form("2024-2025"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -211,6 +280,7 @@ async def upload_document(
 
     # 4. Extract Text
     extracted_text = extract_text(file_bytes, file.filename)
+    embedding = await _embedding_for_text(extracted_text)
 
     # 5. Document title
     doc_title = title or file.filename.rsplit(".", 1)[0].replace("_", " ").title()
@@ -232,6 +302,8 @@ async def upload_document(
     with open(local_path, "wb") as f:
         f.write(file_bytes)
 
+    folder = await _validate_folder(db, folder_id, current_user)
+
     # 8. Persist Document & Version in Database
     new_doc = Document(
         title=doc_title,
@@ -239,6 +311,7 @@ async def upload_document(
         department_id=dept_id,
         owner_id=current_user.id,
         academic_year=academic_year,
+        folder_id=folder.id if folder else None,
         current_version=1,
     )
     db.add(new_doc)
@@ -255,6 +328,7 @@ async def upload_document(
         extracted_text=extracted_text,
         abstract_summary=abstract_summary,
         extracted_entities=entities_json,
+        embedding=embedding,
         uploaded_by=current_user.id,
     )
     db.add(new_version)
@@ -264,10 +338,7 @@ async def upload_document(
     stmt = (
         select(Document)
         .where(Document.id == new_doc.id)
-        .options(
-            selectinload(Document.category),
-            selectinload(Document.versions),
-        )
+        .options(*_document_options())
     )
     res = await db.execute(stmt)
     created = res.scalar_one()
@@ -302,9 +373,68 @@ async def update_document(
             document.category_id = None
     if payload.academic_year is not None:
         document.academic_year = payload.academic_year.strip()
+    if "folder_id" in payload.model_fields_set:
+        folder = await _validate_folder(db, payload.folder_id, current_user)
+        document.folder_id = folder.id if folder else None
+    if payload.is_restricted is not None:
+        document.is_restricted = payload.is_restricted
 
     await db.commit()
     return await _load_document(db, document_id)
+
+
+@router.post("/{document_id}/permissions", response_model=DocumentOut)
+async def share_document(
+    document_id: str,
+    payload: DocumentShareInput,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    document = await _load_document(db, document_id)
+    if not _can_manage_document(document, current_user):
+        raise HTTPException(status_code=403, detail="You cannot share this document.")
+    if payload.permission not in {"view", "edit", "manage"}:
+        raise HTTPException(status_code=400, detail="Permission must be view, edit or manage.")
+    target = await db.get(User, payload.user_id)
+    if not target or not target.is_active:
+        raise HTTPException(status_code=400, detail="The selected user does not exist.")
+    if target.department_id != document.department_id:
+        raise HTTPException(status_code=400, detail="You can only share with your department.")
+    existing = next(
+        (item for item in document.permissions if item.user_id == target.id),
+        None,
+    )
+    if existing:
+        existing.permission = payload.permission
+    else:
+        db.add(
+            DocumentPermission(
+                document_id=document.id,
+                user_id=target.id,
+                permission=payload.permission,
+                created_by=current_user.id,
+            )
+        )
+    await db.commit()
+    return await _load_document(db, document_id)
+
+
+@router.delete("/{document_id}/permissions/{user_id}", status_code=204)
+async def remove_document_permission(
+    document_id: str,
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    document = await _load_document(db, document_id)
+    if not _can_manage_document(document, current_user):
+        raise HTTPException(status_code=403, detail="You cannot change sharing for this document.")
+    permission = next((item for item in document.permissions if item.user_id == user_id), None)
+    if not permission:
+        raise HTTPException(status_code=404, detail="Permission not found.")
+    await db.delete(permission)
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.patch("/{document_id}/archive", response_model=DocumentOut)
@@ -356,7 +486,7 @@ async def upload_document_version(
     current_user: User = Depends(get_current_user),
 ) -> Any:
     document = await _load_document(db, document_id)
-    if not _can_access_document(document, current_user):
+    if not _can_edit_document(document, current_user):
         raise HTTPException(status_code=403, detail="You cannot update this document.")
 
     filename = Path(file.filename or "document").name
@@ -370,6 +500,7 @@ async def upload_document_version(
         raise HTTPException(status_code=409, detail="This file is already one of the document versions.")
 
     extracted_text = extract_text(file_bytes, filename)
+    embedding = await _embedding_for_text(extracted_text)
     next_version = max((version.version_number for version in document.versions), default=0) + 1
     os.makedirs("./uploads", exist_ok=True)
     local_path = f"./uploads/{checksum}_{filename}"
@@ -385,9 +516,45 @@ async def upload_document_version(
         mime_type=file.content_type or "application/octet-stream",
         sha256_checksum=checksum,
         extracted_text=extracted_text,
+        embedding=embedding,
         uploaded_by=current_user.id,
     )
     db.add(version)
+    document.current_version = next_version
+    await db.commit()
+    return await _load_document(db, document_id)
+
+
+@router.post("/{document_id}/versions/{version_id}/restore", response_model=DocumentOut)
+async def restore_document_version(
+    document_id: str,
+    version_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    document = await _load_document(db, document_id)
+    if not _can_edit_document(document, current_user):
+        raise HTTPException(status_code=403, detail="You cannot restore this document.")
+    version = next((item for item in document.versions if item.id == version_id), None)
+    if not version:
+        raise HTTPException(status_code=404, detail="Document version not found.")
+    next_version = max((item.version_number for item in document.versions), default=0) + 1
+    db.add(
+        DocumentVersion(
+            document_id=document.id,
+            version_number=next_version,
+            file_name=version.file_name,
+            file_path=version.file_path,
+            file_size_bytes=version.file_size_bytes,
+            mime_type=version.mime_type,
+            sha256_checksum=version.sha256_checksum,
+            extracted_text=version.extracted_text,
+            abstract_summary=version.abstract_summary,
+            extracted_entities=version.extracted_entities,
+            embedding=version.embedding,
+            uploaded_by=current_user.id,
+        )
+    )
     document.current_version = next_version
     await db.commit()
     return await _load_document(db, document_id)
@@ -480,6 +647,7 @@ async def import_google_document(
         file=upload,
         title=payload.title,
         category_id=payload.category_id,
+        folder_id=payload.folder_id,
         academic_year=payload.academic_year,
         db=db,
         current_user=current_user,
@@ -513,20 +681,61 @@ async def list_documents(
         stmt = stmt.where(Document.academic_year == academic_year)
 
     res = await db.execute(stmt)
-    return [_attach_latest(document) for document in res.scalars().all()]
+    return [
+        _attach_latest(document)
+        for document in res.scalars().all()
+        if _can_access_document(document, current_user)
+    ]
 
 
 @router.get("/search", response_model=DocumentSearchResponse)
 async def search_documents(
     q: str,
     include_archived: bool = Query(False),
+    semantic: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """
-    Sub-second metadata and content-based keyword search.
+    Full-text search, with optional embedding-based semantic ranking.
     """
     start_time = time.perf_counter()
+
+    if semantic and settings.GEMINI_API_KEY:
+        try:
+            query_embedding = await llm_service.embed_text(q)
+            stmt = select(Document).options(*_document_options())
+            if not include_archived:
+                stmt = stmt.where(Document.is_archived.is_(False))
+            if current_user.department_id:
+                stmt = stmt.where(Document.department_id == current_user.department_id)
+            candidates = (await db.execute(stmt)).scalars().all()
+            scored = []
+            for document in candidates:
+                if not _can_access_document(document, current_user):
+                    continue
+                scores = []
+                for version in document.versions:
+                    if not version.embedding:
+                        continue
+                    try:
+                        version_embedding = json.loads(version.embedding)
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    scores.append(_cosine_similarity(query_embedding, version_embedding))
+                if scores and max(scores) >= 0.2:
+                    scored.append((max(scores), document))
+
+            if scored:
+                scored.sort(key=lambda item: item[0], reverse=True)
+                items = [_attach_latest(document) for _, document in scored[:50]]
+                return {
+                    "total": len(scored),
+                    "items": items,
+                    "query_latency_ms": round((time.perf_counter() - start_time) * 1000.0, 2),
+                }
+        except AIServiceUnavailable:
+            pass
 
     pattern = f"%{q}%"
     stmt = (
@@ -539,7 +748,7 @@ async def search_documents(
                 DocumentVersion.abstract_summary.ilike(pattern),
             ),
         )
-        .options(selectinload(Document.category), selectinload(Document.versions))
+        .options(*_document_options())
         .distinct()
     )
     if not include_archived:
@@ -548,7 +757,11 @@ async def search_documents(
         stmt = stmt.where(Document.department_id == current_user.department_id)
 
     res = await db.execute(stmt)
-    docs = res.scalars().all()
+    docs = [
+        document
+        for document in res.scalars().all()
+        if _can_access_document(document, current_user)
+    ]
     for d in docs:
         if d.versions:
             d.latest_version = d.versions[0]
@@ -560,6 +773,123 @@ async def search_documents(
         "items": docs,
         "query_latency_ms": round(latency_ms, 2)
     }
+
+
+@router.get("/share-users")
+async def list_share_users(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    stmt = select(User).where(User.is_active.is_(True))
+    if current_user.department_id:
+        stmt = stmt.where(User.department_id == current_user.department_id)
+    users = (await db.execute(stmt.order_by(User.full_name))).scalars().all()
+    return [
+        {"id": user.id, "full_name": user.full_name, "email": user.email}
+        for user in users
+        if user.id != current_user.id
+    ]
+
+
+@router.get("/folders", response_model=List[DocumentFolderOut])
+async def list_folders(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    stmt = select(DocumentFolder)
+    if current_user.department_id:
+        stmt = stmt.where(DocumentFolder.department_id == current_user.department_id)
+    folders = (await db.execute(stmt.order_by(DocumentFolder.name))).scalars().all()
+    count_stmt = select(Document.folder_id, func.count()).group_by(Document.folder_id)
+    if current_user.department_id:
+        count_stmt = count_stmt.where(Document.department_id == current_user.department_id)
+    counts = {folder_id: count for folder_id, count in (await db.execute(count_stmt)).all()}
+    return [
+        DocumentFolderOut.model_validate(folder).model_copy(
+            update={"document_count": counts.get(folder.id, 0)}
+        )
+        for folder in folders
+    ]
+
+
+@router.post("/folders", response_model=DocumentFolderOut)
+async def create_folder(
+    payload: DocumentFolderCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    if not current_user.department_id:
+        raise HTTPException(status_code=400, detail="Your account is not assigned to a department.")
+    parent = await _validate_folder(db, payload.parent_id, current_user)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Folder name cannot be empty.")
+    folder = DocumentFolder(
+        name=name,
+        parent_id=parent.id if parent else None,
+        department_id=current_user.department_id,
+        created_by=current_user.id,
+    )
+    db.add(folder)
+    await db.commit()
+    await db.refresh(folder)
+    return folder
+
+
+@router.patch("/folders/{folder_id}", response_model=DocumentFolderOut)
+async def update_folder(
+    folder_id: str,
+    payload: DocumentFolderUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    folder = await db.get(DocumentFolder, folder_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    if current_user.department_id and folder.department_id != current_user.department_id:
+        raise HTTPException(status_code=403, detail="You cannot edit this folder.")
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Folder name cannot be empty.")
+        folder.name = name
+    if "parent_id" in payload.model_fields_set:
+        if payload.parent_id == folder.id:
+            raise HTTPException(status_code=400, detail="A folder cannot contain itself.")
+        parent = await _validate_folder(db, payload.parent_id, current_user)
+        cursor = parent
+        while cursor:
+            if cursor.id == folder.id:
+                raise HTTPException(status_code=400, detail="A folder cannot be moved inside its child.")
+            cursor = await db.get(DocumentFolder, cursor.parent_id) if cursor.parent_id else None
+        folder.parent_id = parent.id if parent else None
+    await db.commit()
+    await db.refresh(folder)
+    return folder
+
+
+@router.delete("/folders/{folder_id}", status_code=204)
+async def delete_folder(
+    folder_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    folder = await db.get(DocumentFolder, folder_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    if current_user.department_id and folder.department_id != current_user.department_id:
+        raise HTTPException(status_code=403, detail="You cannot delete this folder.")
+    await db.execute(
+        update(Document).where(Document.folder_id == folder.id).values(folder_id=folder.parent_id)
+    )
+    await db.execute(
+        update(DocumentFolder)
+        .where(DocumentFolder.parent_id == folder.id)
+        .values(parent_id=folder.parent_id)
+    )
+    await db.delete(folder)
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/categories", response_model=List[CategoryOut])
@@ -578,14 +908,9 @@ async def summarize_document(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    stmt = (
-        select(Document)
-        .where(Document.id == document_id)
-        .options(selectinload(Document.category), selectinload(Document.versions))
-    )
-    document = (await db.execute(stmt)).scalar_one_or_none()
-    if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
+    document = await _load_document(db, document_id)
+    if not _can_access_document(document, current_user):
+        raise HTTPException(status_code=403, detail="You cannot access this document.")
     if not document.versions:
         raise HTTPException(status_code=400, detail="Document has no stored version.")
     version = document.versions[0]
@@ -615,15 +940,7 @@ async def get_document_detail(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    stmt = (
-        select(Document)
-        .where(Document.id == document_id)
-        .options(selectinload(Document.category), selectinload(Document.versions))
-    )
-    res = await db.execute(stmt)
-    doc = res.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-    if doc.versions:
-        doc.latest_version = doc.versions[0]
-    return doc
+    document = await _load_document(db, document_id)
+    if not _can_access_document(document, current_user):
+        raise HTTPException(status_code=403, detail="You cannot access this document.")
+    return document

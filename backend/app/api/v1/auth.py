@@ -19,8 +19,13 @@ from app.core.security import (
 )
 from app.models.user import Department, Role, User
 from app.schemas.user import (
+    AdminPasswordReset,
+    DepartmentCreate,
+    DepartmentOut,
     RefreshTokenRequest,
+    RoleOut,
     Token,
+    UserAdminUpdate,
     UserCreate,
     UserOut,
 )
@@ -210,3 +215,134 @@ async def refresh_tokens(
 @router.get("/me", response_model=UserOut)
 async def get_current_user_profile(current_user: User = Depends(get_current_user)) -> Any:
     return current_user
+
+
+@router.get("/users", response_model=list[UserOut])
+async def list_users(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    if not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Only an administrator can list users.")
+    stmt = (
+        select(User)
+        .options(selectinload(User.roles), selectinload(User.department))
+        .order_by(User.full_name)
+    )
+    return (await db.execute(stmt)).scalars().all()
+
+
+@router.patch("/users/{user_id}", response_model=UserOut)
+async def update_user(
+    user_id: str,
+    payload: UserAdminUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    if not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Only an administrator can edit users.")
+    stmt = (
+        select(User)
+        .where(User.id == user_id)
+        .options(selectinload(User.roles), selectinload(User.department))
+    )
+    target = (await db.execute(stmt)).scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if payload.full_name is not None:
+        target.full_name = payload.full_name.strip()
+    if "department_id" in payload.model_fields_set:
+        if payload.department_id:
+            department = await db.get(Department, payload.department_id)
+            if not department:
+                raise HTTPException(status_code=400, detail="Department not found.")
+            target.department_id = department.id
+        else:
+            target.department_id = None
+    if payload.roles is not None:
+        requested = payload.roles or ["Staff"]
+        roles = (
+            await db.execute(select(Role).where(Role.role_name.in_(requested)))
+        ).scalars().all()
+        found = {role.role_name for role in roles}
+        missing = set(requested) - found
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Unknown roles: {', '.join(sorted(missing))}.")
+        if "System Admin" in requested and not current_user.is_superuser:
+            raise HTTPException(status_code=403, detail="Only a superuser can grant the System Admin role.")
+        target.roles = list(roles)
+    if payload.is_active is not None:
+        if target.id == current_user.id and not payload.is_active:
+            raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
+        target.is_active = payload.is_active
+
+    await db.commit()
+    return (
+        await db.execute(
+            select(User)
+            .where(User.id == user_id)
+            .options(selectinload(User.roles), selectinload(User.department))
+        )
+    ).scalar_one()
+
+
+@router.post("/users/{user_id}/password")
+async def reset_user_password(
+    user_id: str,
+    payload: AdminPasswordReset,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    if not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Only an administrator can reset passwords.")
+    target = await db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    target.hashed_password = get_password_hash(payload.password)
+    await db.commit()
+    return {"message": "Password reset."}
+
+
+@router.get("/roles", response_model=list[RoleOut])
+async def list_roles(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    if not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Only an administrator can list roles.")
+    return (await db.execute(select(Role).order_by(Role.role_name))).scalars().all()
+
+
+@router.get("/departments", response_model=list[DepartmentOut])
+async def list_departments(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    if not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="Only an administrator can list departments.")
+    return (await db.execute(select(Department).order_by(Department.name))).scalars().all()
+
+
+@router.post("/departments", response_model=DepartmentOut)
+async def create_department(
+    payload: DepartmentCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    if not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Only a superuser can create departments.")
+    existing = await db.execute(
+        select(Department).where(Department.department_code == payload.department_code.strip())
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="A department with this code already exists.")
+    department = Department(
+        department_code=payload.department_code.strip(),
+        name=payload.name.strip(),
+        faculty=payload.faculty.strip(),
+    )
+    db.add(department)
+    await db.commit()
+    await db.refresh(department)
+    return department

@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.models.document import Document
+from app.models.document import Document, DocumentPermission
 from app.models.meeting import ActionItem, Meeting, MeetingSummary
 from app.models.user import User
 from app.schemas.document import DocumentOut
@@ -106,9 +106,24 @@ async def get_dashboard(
     recent_doc_stmt = (
         document_stmt.order_by(Document.created_at.desc())
         .limit(5)
-        .options(selectinload(Document.category), selectinload(Document.versions))
+        .options(
+            selectinload(Document.category),
+            selectinload(Document.folder),
+            selectinload(Document.versions),
+            selectinload(Document.permissions).selectinload(DocumentPermission.user),
+        )
     )
     recent_documents = (await db.execute(recent_doc_stmt)).scalars().all()
+    recent_documents = [
+        document
+        for document in recent_documents
+        if (
+            current_user.is_superuser
+            or document.owner_id == current_user.id
+            or not document.is_restricted
+            or any(item.user_id == current_user.id for item in document.permissions)
+        )
+    ]
     for document in recent_documents:
         if document.versions:
             document.latest_version = document.versions[0]

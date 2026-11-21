@@ -156,6 +156,38 @@ class GeminiService:
 
         raise AIServiceUnavailable(last_error)
 
+    async def embed_text(self, text: str) -> List[float]:
+        if not self.api_key:
+            raise AIServiceUnavailable("GEMINI_API_KEY is not configured.")
+        value = (text or "").strip()[:8000]
+        if not value:
+            raise AIServiceUnavailable("No text is available to embed.")
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{settings.GEMINI_EMBEDDING_MODEL}:embedContent"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    url,
+                    headers={
+                        "x-goog-api-key": self.api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={"content": {"parts": [{"text": value}]}},
+                )
+        except httpx.RequestError as exc:
+            raise AIServiceUnavailable(f"Gemini embedding request failed: {exc}") from exc
+        if response.status_code != 200:
+            raise AIServiceUnavailable(
+                f"Gemini embedding returned HTTP {response.status_code}."
+            )
+        body = response.json()
+        embedding = (body.get("embedding") or {}).get("values")
+        if not isinstance(embedding, list) or not embedding:
+            raise AIServiceUnavailable("Gemini did not return an embedding.")
+        return [float(value) for value in embedding]
+
     async def summarize_document(
         self,
         title: str,

@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from scalar_fastapi import get_scalar_api_reference
 
 from app.core.config import settings
-from app.core.database import engine, Base, AsyncSessionLocal
+from app.core.database import engine, Base, AsyncSessionLocal, ensure_runtime_schema
 from app.core.security import get_password_hash
 from app.models import Role, Department, User, DocumentCategory
 from app.api.v1.router import api_router
@@ -16,6 +16,7 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize tables and seed master data if not present
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await ensure_runtime_schema(conn)
 
     # Seed default data
     async with AsyncSessionLocal() as session:

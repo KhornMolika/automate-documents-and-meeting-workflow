@@ -1,6 +1,12 @@
 from app.core.database import Base
 from app.models.user import User, Role, Department, user_roles
-from app.models.document import Document, DocumentCategory, DocumentVersion
+from app.models.document import (
+    Document,
+    DocumentCategory,
+    DocumentFolder,
+    DocumentPermission,
+    DocumentVersion,
+)
 from app.models.meeting import (
     Meeting,
     MeetingAgenda,
@@ -21,6 +27,8 @@ __all__ = [
     "user_roles",
     "Document",
     "DocumentCategory",
+    "DocumentFolder",
+    "DocumentPermission",
     "DocumentVersion",
     "Meeting",
     "MeetingAgenda",

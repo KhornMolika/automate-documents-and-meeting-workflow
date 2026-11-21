@@ -453,6 +453,208 @@ async def test_document_and_meeting_lifecycle(
 
 
 @pytest.mark.asyncio
+async def test_document_folders_access_and_versions(client: AsyncClient, db_session: AsyncSession):
+    department = Department(
+        department_code="ORG",
+        name="Organisation Department",
+        faculty="Faculty of Science & Technology",
+    )
+    db_session.add(department)
+    await db_session.commit()
+    await db_session.refresh(department)
+
+    admin_login = await client.post(
+        "/api/v1/auth/login",
+        data={"username": "admin@aub.edu.kh", "password": "Admin@AUB2026"},
+    )
+    admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+    for email, name in [
+        ("owner@aub.edu.kh", "Folder Owner"),
+        ("viewer@aub.edu.kh", "Folder Viewer"),
+    ]:
+        reg = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": email,
+                "password": "Password@123",
+                "full_name": name,
+                "department_id": department.id,
+                "roles": ["Staff"],
+            },
+            headers=admin_headers,
+        )
+        assert reg.status_code == 200
+
+    owner_login = await client.post(
+        "/api/v1/auth/login",
+        data={"username": "owner@aub.edu.kh", "password": "Password@123"},
+    )
+    owner_headers = {"Authorization": f"Bearer {owner_login.json()['access_token']}"}
+    viewer_login = await client.post(
+        "/api/v1/auth/login",
+        data={"username": "viewer@aub.edu.kh", "password": "Password@123"},
+    )
+    viewer_headers = {"Authorization": f"Bearer {viewer_login.json()['access_token']}"}
+    viewer_id = (
+        await db_session.execute(select(User).where(User.email == "viewer@aub.edu.kh"))
+    ).scalar_one().id
+
+    folder = await client.post(
+        "/api/v1/documents/folders",
+        json={"name": "Policies"},
+        headers=owner_headers,
+    )
+    assert folder.status_code == 200
+    folder_id = folder.json()["id"]
+
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("folder-policy.csv", b"Policy,Owner\nDemo,Academic Affairs\n", "text/csv")},
+        data={"title": "Folder Policy", "folder_id": folder_id},
+        headers=owner_headers,
+    )
+    assert upload.status_code == 200
+    document_id = upload.json()["id"]
+    assert upload.json()["folder_id"] == folder_id
+    version_id = upload.json()["latest_version"]["id"]
+
+    folders = await client.get("/api/v1/documents/folders", headers=owner_headers)
+    assert folders.status_code == 200
+    assert folders.json()[0]["document_count"] == 1
+
+    move_root = await client.patch(
+        f"/api/v1/documents/{document_id}",
+        json={"folder_id": None},
+        headers=owner_headers,
+    )
+    assert move_root.status_code == 200
+    assert move_root.json()["folder_id"] is None
+
+    move_back = await client.patch(
+        f"/api/v1/documents/{document_id}",
+        json={"folder_id": folder_id},
+        headers=owner_headers,
+    )
+    assert move_back.status_code == 200
+    assert move_back.json()["folder_id"] == folder_id
+
+    restrict = await client.patch(
+        f"/api/v1/documents/{document_id}",
+        json={"is_restricted": True},
+        headers=owner_headers,
+    )
+    assert restrict.status_code == 200
+    viewer_before = await client.get(
+        f"/api/v1/documents/{document_id}", headers=viewer_headers
+    )
+    assert viewer_before.status_code == 403
+
+    share = await client.post(
+        f"/api/v1/documents/{document_id}/permissions",
+        json={"user_id": viewer_id, "permission": "view"},
+        headers=owner_headers,
+    )
+    assert share.status_code == 200
+    assert share.json()["permissions"][0]["full_name"] == "Folder Viewer"
+    viewer_after = await client.get(
+        f"/api/v1/documents/{document_id}", headers=viewer_headers
+    )
+    assert viewer_after.status_code == 200
+
+    remove_share = await client.delete(
+        f"/api/v1/documents/{document_id}/permissions/{viewer_id}",
+        headers=owner_headers,
+    )
+    assert remove_share.status_code == 204
+    viewer_removed = await client.get(
+        f"/api/v1/documents/{document_id}", headers=viewer_headers
+    )
+    assert viewer_removed.status_code == 403
+
+    version = await client.post(
+        f"/api/v1/documents/{document_id}/versions",
+        files={"file": ("folder-policy-v2.csv", b"Policy,Owner\nUpdated,Academic Affairs\n", "text/csv")},
+        headers=owner_headers,
+    )
+    assert version.status_code == 200
+    restore = await client.post(
+        f"/api/v1/documents/{document_id}/versions/{version_id}/restore",
+        headers=owner_headers,
+    )
+    assert restore.status_code == 200
+    assert restore.json()["current_version"] == 3
+
+    folder_delete = await client.delete(
+        f"/api/v1/documents/folders/{folder_id}", headers=owner_headers
+    )
+    assert folder_delete.status_code == 204
+    moved = await client.get(f"/api/v1/documents/{document_id}", headers=owner_headers)
+    assert moved.json()["folder_id"] is None
+
+    users = await client.get("/api/v1/auth/users", headers=admin_headers)
+    assert users.status_code == 200
+    assert any(user["email"] == "viewer@aub.edu.kh" for user in users.json())
+    deactivate = await client.patch(
+        f"/api/v1/auth/users/{viewer_id}",
+        json={"is_active": False},
+        headers=admin_headers,
+    )
+    assert deactivate.status_code == 200
+    inactive_login = await client.post(
+        "/api/v1/auth/login",
+        data={"username": "viewer@aub.edu.kh", "password": "Password@123"},
+    )
+    assert inactive_login.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_semantic_document_search(client: AsyncClient, db_session: AsyncSession, monkeypatch):
+    department = Department(
+        department_code="SEM",
+        name="Semantic Department",
+        faculty="Faculty of Science & Technology",
+    )
+    db_session.add(department)
+    await db_session.commit()
+    await db_session.refresh(department)
+    admin_user = (
+        await db_session.execute(select(User).where(User.email == "admin@aub.edu.kh"))
+    ).scalar_one()
+    admin_user.department_id = department.id
+    await db_session.commit()
+    login = await client.post(
+        "/api/v1/auth/login",
+        data={"username": "admin@aub.edu.kh", "password": "Admin@AUB2026"},
+    )
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    async def fake_embed(text: str):
+        return [0.0, 1.0] if "beta" in text.lower() else [1.0, 0.0]
+
+    monkeypatch.setattr("app.api.v1.documents.settings.GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr("app.api.v1.documents.llm_service.embed_text", fake_embed)
+
+    for title, content in [
+        ("Alpha Policy", b"Policy,Owner\nAlpha,Academic Affairs\n"),
+        ("Beta Policy", b"Policy,Owner\nBeta,Academic Affairs\n"),
+    ]:
+        upload = await client.post(
+            "/api/v1/documents/upload",
+            files={"file": (f"{title}.csv", content, "text/csv")},
+            data={"title": title},
+            headers=headers,
+        )
+        assert upload.status_code == 200
+
+    semantic = await client.get(
+        "/api/v1/documents/search?q=concept&semantic=true", headers=headers
+    )
+    assert semantic.status_code == 200
+    assert semantic.json()["total"] == 1
+    assert semantic.json()["items"][0]["title"] == "Alpha Policy"
+
+
+@pytest.mark.asyncio
 async def test_google_document_import(client: AsyncClient, db_session: AsyncSession, monkeypatch):
     department = Department(
         department_code="GDRIVE",

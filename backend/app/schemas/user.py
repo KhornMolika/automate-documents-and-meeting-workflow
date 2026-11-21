@@ -48,6 +48,23 @@ class UserOut(UserBase):
     created_at: datetime
 
 
+class UserAdminUpdate(BaseModel):
+    full_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    department_id: Optional[str] = None
+    roles: Optional[List[str]] = None
+    is_active: Optional[bool] = None
+
+
+class AdminPasswordReset(BaseModel):
+    password: str = Field(min_length=8, max_length=128)
+
+
+class DepartmentCreate(BaseModel):
+    department_code: str = Field(min_length=1, max_length=20)
+    name: str = Field(min_length=1, max_length=255)
+    faculty: str = Field(min_length=1, max_length=255)
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"

@@ -129,6 +129,33 @@ test.describe('Documents', () => {
     await expect(page.getByTestId('document-table')).toHaveCount(0)
   })
 
+  test('creates a folder and moves a document into it', async ({ page, request }) => {
+    const token = await authenticate(page, request)
+    const title = uniqueTitle('E2E Foldered Document')
+    const folderName = uniqueTitle('E2E Folder')
+    await seedDocument(request, token, title)
+
+    await page.goto('/documents')
+    await page.waitForLoadState('networkidle')
+    await page.getByRole('button', { name: 'New folder' }).click()
+    await page.locator('#folder-name').fill(folderName)
+    await page.getByRole('button', { name: 'Save folder' }).click()
+    await expect(page.getByText('Folder created.')).toBeVisible()
+
+    await page.getByLabel('Search documents').fill(title)
+    const row = page.getByTestId('document-table').locator('tbody tr').first()
+    await row.getByRole('button', { name: `Actions for ${title}` }).click()
+    await page.getByRole('menuitem', { name: 'Move to folder' }).click()
+    await page.locator('#move-folder').click()
+    await page.getByRole('option', { name: folderName }).click()
+    await page.getByRole('button', { name: 'Move document' }).click()
+    await expect(page.getByText('Document moved.')).toBeVisible()
+
+    await page.getByLabel('Search documents').fill('')
+    await page.getByRole('button', { name: new RegExp(folderName) }).first().click()
+    await expect(page.getByTestId('document-table')).toContainText(title)
+  })
+
   test('imports a Google Sheets link through the upload dialog', async ({ page, request }) => {
     await authenticate(page, request)
     await page.goto('/documents')

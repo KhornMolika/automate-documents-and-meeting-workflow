@@ -5,13 +5,17 @@ import {
   Download,
   ExternalLink,
   FileText,
+  Folder as FolderIcon,
+  FolderPlus,
   Link2,
   MoreHorizontal,
   Pencil,
   RotateCcw,
   Search,
+  Sparkles,
   Trash2,
   Upload,
+  X,
 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { Badge } from '~/components/ui/badge'
@@ -43,7 +47,7 @@ import PageHeader from '~/components/workspace/PageHeader.vue'
 import { useApi } from '~/composables/useApi'
 import { useAuth } from '~/composables/useAuth'
 import { fileType, formatBytes, formatDate, parseEntities, plural } from '~/lib/format'
-import type { Category, WorkspaceDocument } from '~/types/api'
+import type { Category, DocumentFolder, DocumentPermission, WorkspaceDocument } from '~/types/api'
 
 useHead({ title: 'Documents · ACLEDA University' })
 
@@ -55,26 +59,72 @@ const { data: documentData, pending, error, refresh } = await useAsyncData('docu
 )
 
 const categories = computed(() => categoryData.value ?? [])
+const { data: folderData, refresh: refreshFolders } = await useAsyncData('document-folders', () =>
+  api<DocumentFolder[]>('/documents/folders'),
+)
+const folders = computed(() => folderData.value ?? [])
 const allDocuments = computed(() => documentData.value ?? [])
 const showArchived = ref(false)
+const selectedFolderId = ref<string | null>(null)
 const search = ref('')
 const debouncedSearch = ref('')
+const semanticSearch = ref(false)
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 const { data: searchData, pending: searchPending, refresh: refreshSearch } = await useAsyncData(
   'document-search',
   () => debouncedSearch.value
     ? api<{ items: WorkspaceDocument[], total: number }>('/documents/search', {
-        query: { q: debouncedSearch.value, include_archived: true },
+        query: {
+          q: debouncedSearch.value,
+          include_archived: true,
+          semantic: semanticSearch.value,
+        },
       })
     : Promise.resolve(null),
-  { watch: [debouncedSearch] },
+  { watch: [debouncedSearch, semanticSearch] },
 )
 const sourceDocuments = computed(() =>
   debouncedSearch.value ? (searchData.value?.items ?? []) : allDocuments.value,
 )
+const folderDescendants = computed(() => {
+  if (!selectedFolderId.value) return null
+  const ids = new Set<string>([selectedFolderId.value])
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const folder of folders.value) {
+      if (folder.parent_id && ids.has(folder.parent_id) && !ids.has(folder.id)) {
+        ids.add(folder.id)
+        changed = true
+      }
+    }
+  }
+  return ids
+})
 const documents = computed(() =>
-  sourceDocuments.value.filter(document => document.is_archived === showArchived.value),
+  sourceDocuments.value.filter(document =>
+    document.is_archived === showArchived.value
+    && (!folderDescendants.value || (document.folder_id ? folderDescendants.value.has(document.folder_id) : false)),
+  ),
 )
+const folderTree = computed(() => {
+  const rows: Array<DocumentFolder & { depth: number }> = []
+  const walk = (parentId: string | null, depth: number) => {
+    for (const folder of folders.value.filter(item => item.parent_id === parentId).sort((a, b) => a.name.localeCompare(b.name))) {
+      rows.push({ ...folder, depth })
+      walk(folder.id, depth + 1)
+    }
+  }
+  walk(null, 0)
+  return rows
+})
+const folderOptions = computed(() => [
+  { value: 'NONE', label: 'No folder' },
+  ...folderTree.value.map(folder => ({
+    value: folder.id,
+    label: `${'— '.repeat(folder.depth)}${folder.name}`,
+  })),
+])
 const archivedCount = computed(() => allDocuments.value.filter(document => document.is_archived).length)
 const departmentName = computed(() => user.value?.department?.name ?? 'Department workspace')
 
@@ -106,6 +156,33 @@ const versionOpen = ref(false)
 const versionTarget = ref<WorkspaceDocument | null>(null)
 const versionFile = ref<File | null>(null)
 const versionUploading = ref(false)
+const folderOpen = ref(false)
+const folderTarget = ref<DocumentFolder | null>(null)
+const folderName = ref('')
+const folderParentId = ref('NONE')
+const folderSaving = ref(false)
+const folderDeleteOpen = ref(false)
+const folderDeleteTarget = ref<DocumentFolder | null>(null)
+const moveOpen = ref(false)
+const moveTarget = ref<WorkspaceDocument | null>(null)
+const moveFolderId = ref('NONE')
+const moving = ref(false)
+const sharing = ref(false)
+const shareUserId = ref('')
+const sharePermission = ref<'view' | 'edit' | 'manage'>('view')
+const { data: shareUserData, refresh: refreshShareUsers } = await useAsyncData(
+  'document-share-users',
+  () => api<Array<{ id: string, full_name: string, email: string }>>('/documents/share-users'),
+)
+const shareUsers = computed(() => shareUserData.value ?? [])
+const shareUserOptions = computed(() =>
+  shareUsers.value.map(user => ({ value: user.id, label: `${user.full_name} · ${user.email}` })),
+)
+const permissionOptions = [
+  { value: 'view', label: 'Can view' },
+  { value: 'edit', label: 'Can edit' },
+  { value: 'manage', label: 'Can manage' },
+]
 const summaryLanguage = ref<'en' | 'km'>('en')
 const summaryDraftLanguage = ref<'en' | 'km' | null>(null)
 const uploadOpen = ref(false)
@@ -118,6 +195,7 @@ const uploadForm = ref({
   year: '2026–2027',
   file: null as File | null,
   googleUrl: '',
+  folder_id: 'NONE',
 })
 
 const years = computed(() => [...new Set(documents.value.map(document => document.academic_year))].sort().reverse())
@@ -201,6 +279,155 @@ function openGoogleDrive() {
   window.open('https://drive.google.com/drive/search', '_blank', 'noopener,noreferrer')
 }
 
+function openNewFolder(parentId = 'NONE') {
+  folderTarget.value = null
+  folderName.value = ''
+  folderParentId.value = parentId
+  folderOpen.value = true
+}
+
+function openRenameFolder(folder: DocumentFolder) {
+  folderTarget.value = folder
+  folderName.value = folder.name
+  folderParentId.value = folder.parent_id ?? 'NONE'
+  folderOpen.value = true
+}
+
+async function saveFolder() {
+  const name = folderName.value.trim()
+  if (!name) {
+    toast.error('Enter a folder name.')
+    return
+  }
+  folderSaving.value = true
+  try {
+    const body = {
+      name,
+      parent_id: folderParentId.value === 'NONE' ? null : folderParentId.value,
+    }
+    if (folderTarget.value) {
+      await api(`/documents/folders/${folderTarget.value.id}`, { method: 'PATCH', body })
+      toast.success('Folder renamed.')
+    } else {
+      await api('/documents/folders', { method: 'POST', body })
+      toast.success('Folder created.')
+    }
+    folderOpen.value = false
+    await refreshFolders()
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not save the folder.')
+  } finally {
+    folderSaving.value = false
+  }
+}
+
+function openDeleteFolder(folder: DocumentFolder) {
+  folderDeleteTarget.value = folder
+  folderDeleteOpen.value = true
+}
+
+async function deleteFolder() {
+  const folder = folderDeleteTarget.value
+  if (!folder) return
+  try {
+    await api(`/documents/folders/${folder.id}`, { method: 'DELETE' })
+    if (selectedFolderId.value === folder.id) selectedFolderId.value = null
+    folderDeleteOpen.value = false
+    folderDeleteTarget.value = null
+    await Promise.all([refreshFolders(), refreshDocuments()])
+    toast.success('Folder deleted. Its documents were moved to the parent folder.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not delete the folder.')
+  }
+}
+
+function openMove(document: WorkspaceDocument) {
+  closeMenu()
+  moveTarget.value = document
+  moveFolderId.value = document.folder_id ?? 'NONE'
+  moveOpen.value = true
+}
+
+async function moveDocument() {
+  const document = moveTarget.value
+  if (!document) return
+  moving.value = true
+  try {
+    const updated = await api<WorkspaceDocument>(`/documents/${document.id}`, {
+      method: 'PATCH',
+      body: { folder_id: moveFolderId.value === 'NONE' ? null : moveFolderId.value },
+    })
+    if (selected.value?.id === updated.id) selected.value = updated
+    moveOpen.value = false
+    moveTarget.value = null
+    await Promise.all([refreshDocuments(), refreshFolders()])
+    toast.success('Document moved.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not move the document.')
+  } finally {
+    moving.value = false
+  }
+}
+
+async function reloadSelected() {
+  if (!selected.value) return
+  selected.value = await api<WorkspaceDocument>(`/documents/${selected.value.id}`)
+}
+
+async function toggleRestricted(event: Event) {
+  if (!selected.value) return
+  const isRestricted = (event.target as HTMLInputElement).checked
+  try {
+    const updated = await api<WorkspaceDocument>(`/documents/${selected.value.id}`, {
+      method: 'PATCH',
+      body: { is_restricted: isRestricted },
+    })
+    selected.value = updated
+    await refreshDocuments()
+    toast.success(isRestricted ? 'Document restricted to invited users.' : 'Document visible to the department.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not update access.')
+  }
+}
+
+async function shareDocument() {
+  if (!selected.value || !shareUserId.value) {
+    toast.error('Choose a user to share with.')
+    return
+  }
+  sharing.value = true
+  try {
+    selected.value = await api<WorkspaceDocument>(
+      `/documents/${selected.value.id}/permissions`,
+      {
+        method: 'POST',
+        body: { user_id: shareUserId.value, permission: sharePermission.value },
+      },
+    )
+    shareUserId.value = ''
+    await refreshDocuments()
+    toast.success('Access updated.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not share the document.')
+  } finally {
+    sharing.value = false
+  }
+}
+
+async function removeShare(permission: DocumentPermission) {
+  if (!selected.value) return
+  try {
+    await api(`/documents/${selected.value.id}/permissions/${permission.user_id}`, {
+      method: 'DELETE',
+    })
+    await reloadSelected()
+    await refreshDocuments()
+    toast.success('Access removed.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not remove access.')
+  }
+}
+
 function resetUpload() {
   uploadMode.value = 'file'
   uploadForm.value = {
@@ -209,6 +436,7 @@ function resetUpload() {
     year: '2026–2027',
     file: null,
     googleUrl: '',
+    folder_id: 'NONE',
   }
 }
 
@@ -231,6 +459,7 @@ async function addDocument() {
           url: uploadForm.value.googleUrl.trim(),
           title: uploadForm.value.title.trim() || undefined,
           category_id: uploadForm.value.category_id === 'NONE' ? undefined : uploadForm.value.category_id,
+          folder_id: uploadForm.value.folder_id === 'NONE' ? undefined : uploadForm.value.folder_id,
           academic_year: uploadForm.value.year,
         },
       })
@@ -241,13 +470,16 @@ async function addDocument() {
       if (uploadForm.value.category_id && uploadForm.value.category_id !== 'NONE') {
         formData.append('category_id', uploadForm.value.category_id)
       }
+      if (uploadForm.value.folder_id && uploadForm.value.folder_id !== 'NONE') {
+        formData.append('folder_id', uploadForm.value.folder_id)
+      }
       formData.append('academic_year', uploadForm.value.year)
       created = await api<WorkspaceDocument>('/documents/upload', {
         method: 'POST',
         body: formData,
       })
     }
-    await refreshDocuments()
+    await Promise.all([refreshDocuments(), refreshFolders()])
     uploadOpen.value = false
     resetUpload()
     toast.success(
@@ -339,7 +571,7 @@ async function deleteDocument() {
     if (selected.value?.id === document.id) selected.value = null
     deleteOpen.value = false
     deleteTarget.value = null
-    await refreshDocuments()
+    await Promise.all([refreshDocuments(), refreshFolders()])
     toast.success('Document deleted.')
   } catch (err: any) {
     toast.error(err?.data?.detail ?? 'Could not delete the document.')
@@ -402,6 +634,24 @@ async function uploadVersion() {
     toast.error(err?.data?.detail ?? 'Could not upload the new version.')
   } finally {
     versionUploading.value = false
+  }
+}
+
+async function restoreVersion(versionId: string) {
+  if (!selected.value) return
+  actionBusyId.value = selected.value.id
+  try {
+    const updated = await api<WorkspaceDocument>(
+      `/documents/${selected.value.id}/versions/${versionId}/restore`,
+      { method: 'POST' },
+    )
+    selected.value = updated
+    await refreshDocuments()
+    toast.success(`Restored as version ${updated.current_version}.`)
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not restore this version.')
+  } finally {
+    actionBusyId.value = ''
   }
 }
 
@@ -477,6 +727,16 @@ onUnmounted(() => {
             aria-label="Filter by academic year"
             class="min-w-0 sm:w-36"
           />
+          <Button
+            variant="outline"
+            class="col-span-2 sm:col-span-1"
+            :class="semanticSearch ? 'border-brand bg-brand-soft text-brand' : ''"
+            :aria-pressed="semanticSearch"
+            @click="semanticSearch = !semanticSearch"
+          >
+            <Sparkles class="h-3.5 w-3.5" />
+            Semantic
+          </Button>
         </div>
       </div>
 
@@ -489,6 +749,53 @@ onUnmounted(() => {
           Archived documents are hidden from the active repository.
         </span>
       </div>
+
+      <Card class="mt-3 p-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="text-[13px] font-medium">Folders</p>
+          <Button variant="ghost" size="xs" class="text-brand" @click="openNewFolder()">
+            <FolderPlus class="h-3.5 w-3.5" />
+            New folder
+          </Button>
+        </div>
+        <div class="mt-2 space-y-0.5">
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-secondary"
+            :class="!selectedFolderId ? 'bg-secondary font-medium' : 'text-muted-foreground'"
+            @click="selectedFolderId = null"
+          >
+            <FolderIcon class="h-3.5 w-3.5" />
+            All documents
+            <span class="ml-auto tabular-nums">{{ allDocuments.length }}</span>
+          </button>
+          <div v-for="folder in folderTree" :key="folder.id" class="group flex items-center gap-1">
+            <button
+              type="button"
+              class="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-secondary"
+              :class="selectedFolderId === folder.id ? 'bg-secondary font-medium' : 'text-muted-foreground'"
+              :style="{ paddingLeft: `${8 + folder.depth * 16}px` }"
+              @click="selectedFolderId = folder.id"
+            >
+              <FolderIcon class="h-3.5 w-3.5 shrink-0" />
+              <span class="truncate">{{ folder.name }}</span>
+              <span class="ml-auto tabular-nums">{{ folder.document_count ?? 0 }}</span>
+            </button>
+            <Button variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100" :aria-label="`Add subfolder to ${folder.name}`" @click="openNewFolder(folder.id)">
+              <FolderPlus class="h-3.5 w-3.5" />
+            </Button>
+            <Button variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100" :aria-label="`Rename ${folder.name}`" @click="openRenameFolder(folder)">
+              <Pencil class="h-3.5 w-3.5" />
+            </Button>
+            <Button variant="ghost" size="icon-sm" class="opacity-0 text-negative group-hover:opacity-100" :aria-label="`Delete ${folder.name}`" @click="openDeleteFolder(folder)">
+              <Trash2 class="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          <p v-if="!folderTree.length" class="px-2 py-1 text-[12px] text-muted-foreground">
+            Create folders to keep policy, curriculum and committee documents together.
+          </p>
+        </div>
+      </Card>
 
       <Card v-if="filteredDocuments.length" class="mt-4 overflow-hidden" data-testid="document-table">
         <Table>
@@ -550,6 +857,10 @@ onUnmounted(() => {
                     <button type="button" class="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-secondary" role="menuitem" @click="openRename(document)">
                       <Pencil class="h-3.5 w-3.5" />
                       Rename
+                    </button>
+                    <button type="button" class="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-secondary" role="menuitem" @click="openMove(document)">
+                      <FolderIcon class="h-3.5 w-3.5" />
+                      Move to folder
                     </button>
                     <button type="button" class="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-secondary" role="menuitem" @click="downloadDocument(document)">
                       <Download class="h-3.5 w-3.5" />
@@ -687,6 +998,37 @@ onUnmounted(() => {
             </Button>
           </div>
 
+          <div class="rounded-md border p-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p class="text-[13px] font-medium">Access control</p>
+                <p class="mt-0.5 text-[12px] text-muted-foreground">
+                  {{ selected.is_restricted ? 'Only invited users and department admins can access this document.' : 'All members of your department can access this document.' }}
+                </p>
+              </div>
+              <label class="flex cursor-pointer items-center gap-2 text-[13px]">
+                <input type="checkbox" class="h-4 w-4 accent-brand" :checked="selected.is_restricted" @change="toggleRestricted" />
+                Restricted
+              </label>
+            </div>
+
+            <div v-if="selected.is_restricted" class="mt-3 space-y-2 border-t pt-3">
+              <div v-for="permission in selected.permissions ?? []" :key="permission.user_id" class="flex flex-wrap items-center gap-2 rounded-md bg-muted/40 px-2.5 py-1.5 text-[13px]">
+                <span class="font-medium">{{ permission.full_name }}</span>
+                <span class="text-muted-foreground">{{ permission.email }}</span>
+                <Badge variant="outline" class="ml-auto">{{ permission.permission }}</Badge>
+                <Button variant="ghost" size="icon-sm" :aria-label="`Remove access for ${permission.full_name}`" @click="removeShare(permission)">
+                  <X class="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_130px_auto]">
+                <Select v-model="shareUserId" :options="shareUserOptions" aria-label="User to share with" placeholder="Choose a user" />
+                <Select v-model="sharePermission" :options="permissionOptions" aria-label="Permission" />
+                <Button :disabled="sharing || !shareUserId" @click="shareDocument">{{ sharing ? 'Sharing…' : 'Share' }}</Button>
+              </div>
+            </div>
+          </div>
+
           <div v-if="selected.drive_file_id" class="flex flex-col gap-3 rounded-md border border-brand/20 bg-brand-soft px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div class="min-w-0">
               <p class="text-[13px] font-medium text-brand">Archived from a meeting</p>
@@ -794,6 +1136,16 @@ onUnmounted(() => {
                   <Download class="h-3.5 w-3.5" />
                   Download
                 </Button>
+                <Button
+                  v-if="!selected?.is_archived"
+                  variant="ghost"
+                  size="xs"
+                  :disabled="actionBusyId === selected?.id"
+                  @click="restoreVersion(version.id)"
+                >
+                  <RotateCcw class="h-3.5 w-3.5" />
+                  Restore
+                </Button>
               </div>
             </div>
           </div>
@@ -897,6 +1249,16 @@ onUnmounted(() => {
               <Input id="document-year" v-model="uploadForm.year" placeholder="2026–2027" />
             </div>
           </div>
+
+          <div class="space-y-1.5">
+            <Label for="document-folder">Folder</Label>
+            <Select
+              id="document-folder"
+              v-model="uploadForm.folder_id"
+              :options="folderOptions"
+              aria-label="Folder"
+            />
+          </div>
         </div>
 
         <DialogFooter>
@@ -976,6 +1338,66 @@ onUnmounted(() => {
           <Button :disabled="versionUploading || !versionFile" @click="uploadVersion">
             {{ versionUploading ? 'Uploading…' : 'Upload version' }}
           </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="folderOpen">
+      <DialogContent class="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{{ folderTarget ? 'Edit folder' : 'New folder' }}</DialogTitle>
+          <DialogDescription>Folders are shared across your department and can contain other folders.</DialogDescription>
+        </DialogHeader>
+        <div class="space-y-3">
+          <div class="space-y-1.5">
+            <Label for="folder-name">Name</Label>
+            <Input id="folder-name" v-model="folderName" placeholder="e.g. Academic year 2026–2027" @keyup.enter="saveFolder" />
+          </div>
+          <div class="space-y-1.5">
+            <Label for="folder-parent">Parent folder</Label>
+            <Select id="folder-parent" v-model="folderParentId" :options="folderOptions" aria-label="Parent folder" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" :disabled="folderSaving" @click="folderOpen = false">Cancel</Button>
+          <Button :disabled="folderSaving || !folderName.trim()" @click="saveFolder">
+            {{ folderSaving ? 'Saving…' : 'Save folder' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="folderDeleteOpen">
+      <DialogContent class="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Delete this folder?</DialogTitle>
+          <DialogDescription>
+            Documents and subfolders will be moved to the parent folder. This does not delete the documents.
+          </DialogDescription>
+        </DialogHeader>
+        <div class="rounded-md border border-negative/20 bg-negative-soft px-3 py-2.5 text-[13px] text-negative">
+          {{ folderDeleteTarget?.name }}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="folderDeleteOpen = false">Cancel</Button>
+          <Button variant="destructive" @click="deleteFolder">Delete folder</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="moveOpen">
+      <DialogContent class="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Move document</DialogTitle>
+          <DialogDescription>{{ moveTarget?.title }}</DialogDescription>
+        </DialogHeader>
+        <div class="space-y-1.5">
+          <Label for="move-folder">Folder</Label>
+          <Select id="move-folder" v-model="moveFolderId" :options="folderOptions" aria-label="Folder" />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" :disabled="moving" @click="moveOpen = false">Cancel</Button>
+          <Button :disabled="moving" @click="moveDocument">{{ moving ? 'Moving…' : 'Move document' }}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

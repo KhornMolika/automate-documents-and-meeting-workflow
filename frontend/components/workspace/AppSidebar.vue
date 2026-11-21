@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { BookOpen, CheckSquare, ExternalLink, FileText, LayoutDashboard, LogOut, Video } from 'lucide-vue-next'
+import { BookOpen, CheckSquare, ExternalLink, FileText, LayoutDashboard, LogOut, ShieldCheck, Video } from 'lucide-vue-next'
 import { Avatar, AvatarFallback } from '~/components/ui/avatar'
 import { Button } from '~/components/ui/button'
 import { useAuth } from '~/composables/useAuth'
@@ -21,12 +21,19 @@ const roleName = computed(() => {
 const displayName = computed(() => user.value?.full_name ?? 'Loading account…')
 const avatarLabel = computed(() => initials(user.value?.full_name))
 
-const navItems = [
+const isAdmin = computed(() =>
+  Boolean(
+    user.value?.is_superuser
+    || user.value?.roles?.some(role => role.role_name === 'System Admin'),
+  ),
+)
+const navItems = computed(() => [
   { label: 'Overview', to: '/', icon: LayoutDashboard },
   { label: 'Meetings', to: '/meetings', icon: Video },
   { label: 'Documents', to: '/documents', icon: FileText },
   { label: 'Tasks', to: '/tasks', icon: CheckSquare },
-]
+  ...(isAdmin.value ? [{ label: 'Administration', to: '/admin', icon: ShieldCheck }] : []),
+])
 
 function isActive(to: string) {
   return to === '/' ? route.path === '/' : route.path.startsWith(to)

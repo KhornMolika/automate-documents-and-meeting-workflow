@@ -47,8 +47,11 @@ docker-compose.yml
 
 - **Overview** — next meeting, open/overdue tasks, recent documents
 - **Meetings** — create meetings, add content, review and publish minutes
-- **Documents** — repository, uploads, version history, download, rename, archive/restore, Google Docs/Sheets/Slides import, archived minutes
+- **Documents** — folder tree, full-text and semantic search, uploads, version history and restore, download, rename, archive/restore, document-level sharing, Google Docs/Sheets/Slides import, archived minutes
 - **Tasks** — action items with status tracking and a read-only decision log
+- **Administration** — users, roles, department assignment, password resets and department creation (administrators only)
+
+Semantic document search uses Gemini embeddings. New uploads are embedded when `GEMINI_API_KEY` is configured; without it, full-text and metadata search still work. Restricted documents are visible only to their owner, invited users and department administrators.
 
 ---
 
