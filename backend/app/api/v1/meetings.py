@@ -555,6 +555,40 @@ async def save_mom_draft(
     return (await db.execute(stmt)).scalar_one()
 
 
+@router.post("/{meeting_id}/publish-to-drive", response_model=List[DriveFileOut])
+async def publish_verified_minutes_to_drive(
+    meeting_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    if not google_drive.is_configured:
+        raise HTTPException(
+            status_code=400,
+            detail="Google Drive publishing is not configured on this server.",
+        )
+    stmt = select(Meeting).where(Meeting.id == meeting_id).options(*_meeting_options())
+    meeting = (await db.execute(stmt)).scalar_one_or_none()
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    if not _can_manage_meeting(meeting, current_user):
+        raise HTTPException(status_code=403, detail="You cannot publish this meeting.")
+    if not meeting.summary or not meeting.summary.is_verified:
+        raise HTTPException(status_code=400, detail="Publish the minutes before saving them to Google Drive.")
+
+    try:
+        files = await google_drive.publish_minutes(meeting, meeting.summary)
+    except GoogleDriveError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return [
+        DriveFileOut(
+            id=str(item.get("id", "")),
+            name=str(item.get("name", "")),
+            web_view_link=item.get("webViewLink"),
+        )
+        for item in files
+    ]
+
+
 @router.post("/{meeting_id}/approve-mom", response_model=MeetingPublishOut)
 async def approve_and_publish_mom(
     meeting_id: str,

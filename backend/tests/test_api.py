@@ -295,6 +295,11 @@ async def test_document_and_meeting_lifecycle(
     )
     assert drive_res.status_code == 200
     assert drive_res.json()["drive_files"][0]["id"] == "drive-doc-1"
+    drive_only = await client.post(
+        f"/api/v1/meetings/{meeting_id}/publish-to-drive", headers=headers
+    )
+    assert drive_only.status_code == 200
+    assert drive_only.json()[0]["web_view_link"].startswith("https://drive.google.com/")
 
     # The verified minutes are archived in the document repository.
     search_res = await client.get("/api/v1/documents/search?q=Minutes", headers=headers)

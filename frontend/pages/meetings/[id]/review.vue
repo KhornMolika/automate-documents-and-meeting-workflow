@@ -66,6 +66,7 @@ const meeting = computed(() => data.value?.meeting)
 const sourceTranscripts = computed(() => data.value?.transcripts ?? [])
 const publishToDrive = ref(false)
 const driveLinks = ref<DriveFile[]>([])
+const savingDrive = ref(false)
 const transcription = ref<TranscriptionJob | null>(null)
 const mom = reactive({
   executiveSummary: '',
@@ -530,6 +531,22 @@ async function publish() {
   }
 }
 
+async function saveToDrive() {
+  if (!meeting.value) return
+  savingDrive.value = true
+  try {
+    driveLinks.value = await api<DriveFile[]>(
+      `/meetings/${meeting.value.id}/publish-to-drive`,
+      { method: 'POST' },
+    )
+    toast.success('Minutes saved to Google Drive.')
+  } catch (err: any) {
+    toast.error(err?.data?.detail ?? 'Could not save the minutes to Google Drive.')
+  } finally {
+    savingDrive.value = false
+  }
+}
+
 function formatTimestamp(value: number) {
   const minutes = Math.floor(value / 60)
   const seconds = Math.floor(value % 60)
@@ -643,6 +660,19 @@ onUnmounted(() => {
           <Button variant="outline" size="sm" @click="downloadFile(`/workspace/meetings/${meeting.id}/action-items.csv`, 'action-items.csv')">
             <Download class="h-3.5 w-3.5" />
             CSV
+          </Button>
+          <Button
+            v-if="driveStatus?.configured && !driveLinks.length"
+            variant="outline"
+            size="sm"
+            :disabled="savingDrive"
+            @click="saveToDrive"
+          >
+            <span v-if="savingDrive" class="h-3 w-3 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
+            {{ savingDrive ? 'Saving…' : 'Save to Drive' }}
+          </Button>
+          <Button v-else-if="driveLinks.length" variant="outline" size="sm" as-child>
+            <a :href="driveLinks[0]?.web_view_link ?? '#'" target="_blank" rel="noreferrer">Open in Drive</a>
           </Button>
           <Button variant="outline" size="sm" as-child>
             <NuxtLink to="/tasks">Open tasks</NuxtLink>
